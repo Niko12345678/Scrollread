@@ -440,27 +440,52 @@
         const audioBlob = await response.blob();
         const audioUrl = URL.createObjectURL(audioBlob);
         const audio = new Audio(audioUrl);
-        
-        // Simulate word tracking based on audio duration
+
         const words = text.split(/\s+/);
-        const avgWordDuration = (audio.duration || (words.length * 0.3)) / words.length;
-        
-        let wordIndex = 0;
-        const wordInterval = setInterval(() => {
-          if (wordIndex < words.length) {
-            onWord(wordIndex);
-            wordIndex++;
-          }
-        }, avgWordDuration * 1000);
+        let wordInterval = null;
+
+        // Wait for audio metadata to load to get accurate duration
+        await new Promise((resolve, reject) => {
+          audio.onloadedmetadata = () => {
+            const duration = audio.duration;
+            const avgWordDuration = (duration && !isNaN(duration) && duration > 0)
+              ? duration / words.length
+              : 0.3; // Fallback: 0.3 seconds per word
+
+            let wordIndex = 0;
+            wordInterval = setInterval(() => {
+              if (wordIndex < words.length) {
+                onWord(wordIndex);
+                wordIndex++;
+              } else {
+                clearInterval(wordInterval);
+              }
+            }, avgWordDuration * 1000);
+
+            resolve();
+          };
+
+          audio.onerror = (e) => {
+            URL.revokeObjectURL(audioUrl);
+            reject(new Error('Audio load error'));
+          };
+        });
 
         audio.onended = () => {
-          clearInterval(wordInterval);
+          if (wordInterval) clearInterval(wordInterval);
           URL.revokeObjectURL(audioUrl);
           onEnd();
         };
 
-        audio.play();
-        return audio;
+        // Handle play() promise rejection (required for mobile browsers)
+        audio.play().catch(err => {
+          console.error('Audio play failed:', err);
+          if (wordInterval) clearInterval(wordInterval);
+          URL.revokeObjectURL(audioUrl);
+          throw err;
+        });
+
+        return { audio, interval: wordInterval, url: audioUrl };
       } catch (error) {
         console.error('ElevenLabs error:', error);
         throw error;
@@ -1068,6 +1093,8 @@
       const hideUITimeout = useRef(null);
       const audioRef = useRef(null);
       const utteranceRef = useRef(null);
+      const elevenLabsIntervalRef = useRef(null);
+      const audioUrlRef = useRef(null);
       
       // Refs to track current state (avoid stale closures)
       const currentPageRef = useRef(currentPage);
@@ -1121,11 +1148,27 @@
       }, [showUI, isReading]);
 
       const stopSpeaking = useCallback(() => {
+        // Stop ElevenLabs audio
         if (audioRef.current) {
           audioRef.current.pause();
           audioRef.current = null;
         }
+
+        // Clean up ElevenLabs interval
+        if (elevenLabsIntervalRef.current) {
+          clearInterval(elevenLabsIntervalRef.current);
+          elevenLabsIntervalRef.current = null;
+        }
+
+        // Clean up audio URL
+        if (audioUrlRef.current) {
+          URL.revokeObjectURL(audioUrlRef.current);
+          audioUrlRef.current = null;
+        }
+
+        // Stop browser TTS
         speechSynthesis.cancel();
+
         setIsSpeaking(false);
         setCurrentWordIndex(-1);
       }, []);
@@ -1169,8 +1212,10 @@
               setCurrentWordIndex(-1);
               setTimeout(advanceToNextPage, 300);
             }
-          ).then(audio => {
-            audioRef.current = audio;
+          ).then(result => {
+            audioRef.current = result.audio;
+            elevenLabsIntervalRef.current = result.interval;
+            audioUrlRef.current = result.url;
           }).catch(() => {
             speakWithBrowserTTS(text, pageTokens);
           });
@@ -1183,15 +1228,18 @@
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.rate = speechRate;
         utterance.pitch = 1;
-        
+
         const voices = speechSynthesis.getVoices();
         const selectedVoice = voices.find(v => v.name === settings.browserVoice);
         if (selectedVoice) utterance.voice = selectedVoice;
-        
+
         utterance.onboundary = (event) => {
+          // Only process events from the current utterance
+          if (utteranceRef.current !== utterance) return;
+
           if (event.name === 'word') {
             const charIndex = event.charIndex;
-            const tokenIndex = pageTokens.findIndex(t => 
+            const tokenIndex = pageTokens.findIndex(t =>
               charIndex >= t.start && charIndex < t.end
             );
             if (tokenIndex !== -1) {
@@ -1199,13 +1247,25 @@
             }
           }
         };
-        
+
         utterance.onend = () => {
+          // Only process end event from the current utterance
+          if (utteranceRef.current !== utterance) return;
+
           setIsSpeaking(false);
           setCurrentWordIndex(-1);
           setTimeout(advanceToNextPage, 300);
         };
-        
+
+        utterance.onerror = (event) => {
+          // Only process error from the current utterance
+          if (utteranceRef.current !== utterance) return;
+
+          console.error('Speech synthesis error:', event.error);
+          setIsSpeaking(false);
+          setCurrentWordIndex(-1);
+        };
+
         utteranceRef.current = utterance;
         speechSynthesis.speak(utterance);
       }, [speechRate, settings.browserVoice, advanceToNextPage]);
