@@ -93,6 +93,10 @@
   <script type="text/babel">
     const { useState, useEffect, useRef, useCallback } = React;
 
+    // ============ VERSION ============
+    const APP_VERSION = '1.5.0';
+    const BUILD_DATE = '2026-01-12';
+
     // ============ EPUB PARSER (using JSZip directly) ============
     async function parseEpub(file) {
       try {
@@ -1331,6 +1335,15 @@
               letterSpacing: '0.05em'
             }}>
               Installabile come app • Funziona offline
+            </div>
+            <div style={{
+              fontSize: '10px',
+              color: theme.textMuted,
+              letterSpacing: '0.05em',
+              marginTop: '4px',
+              opacity: 0.6
+            }}>
+              v{APP_VERSION} • Build {BUILD_DATE}
             </div>
           </div>
         </div>
