@@ -229,7 +229,7 @@
     // ============================================================
     // VERSION & CONSTANTS
     // ============================================================
-    const APP_VERSION = '1.6.2';
+    const APP_VERSION = '1.6.3';
     const BUILD_DATE = '2026-01-12';
 
     // ============================================================
@@ -2249,9 +2249,10 @@
         const current = currentPageRef.current;
         const allPages = pagesRef.current;
         const reading = isReadingRef.current;
+        const autoAdvance = settings.autoAdvance !== false; // Default to true
 
-        // Only advance if reading
-        if (reading && current < allPages.length - 1) {
+        // Only auto-advance if the setting is enabled
+        if (autoAdvance && reading && current < allPages.length - 1) {
           const nextPage = current + 1;
           setCurrentPage(nextPage);
           currentPageRef.current = nextPage;
@@ -2262,9 +2263,13 @@
             setTokens(newTokens);
             tokensRef.current = newTokens;
             speakText(allPages[nextPage], newTokens);
-          }, 250);
+          }, 400);
+        } else {
+          // Stop reading if we can't advance
+          setIsReading(false);
+          isReadingRef.current = false;
         }
-      }, [speakText]);
+      }, [settings.autoAdvance]);
 
       const speakText = useCallback((text, pageTokens) => {
         stopSpeaking();
@@ -2276,7 +2281,7 @@
         currentPageTokensRef.current = pageTokens;
 
         speakWithBrowserTTS(text, pageTokens);
-      }, [stopSpeaking, speakWithBrowserTTS]);
+      }, [settings]);
 
       const speakWithBrowserTTS = useCallback((text, pageTokens) => {
         const utterance = new SpeechSynthesisUtterance(text);
@@ -2308,25 +2313,9 @@
           // Only process end event from the current utterance
           if (utteranceRef.current !== utterance) return;
 
+          setIsSpeaking(false);
           setCurrentWordIndex(-1);
-
-          // Check if we should auto-advance
-          const current = currentPageRef.current;
-          const allPages = pagesRef.current;
-          const reading = isReadingRef.current;
-          const autoAdvance = settings.autoAdvance !== false;
-
-          if (autoAdvance && reading && current < allPages.length - 1) {
-            // Continue to next page - keep isSpeaking true for continuity
-            setTimeout(advanceToNextPage, 200);
-          } else {
-            // Stop reading - we reached the end or auto-advance is off
-            setIsSpeaking(false);
-            if (reading) {
-              setIsReading(false);
-              isReadingRef.current = false;
-            }
-          }
+          setTimeout(advanceToNextPage, 300);
         };
 
         utterance.onerror = (event) => {
@@ -2340,7 +2329,7 @@
 
         utteranceRef.current = utterance;
         speechSynthesis.speak(utterance);
-      }, [speechRate, settings.browserVoice, settings.autoAdvance, advanceToNextPage, isSpeedBoosted]);
+      }, [speechRate, settings.browserVoice, advanceToNextPage, isSpeedBoosted]);
 
       const goToPage = useCallback((index) => {
         const allPages = pagesRef.current;
