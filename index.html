@@ -2181,6 +2181,8 @@
       const utteranceRef = useRef(null);
       const elevenLabsIntervalRef = useRef(null);
       const audioUrlRef = useRef(null);
+      const currentTextRef = useRef(null);
+      const currentPageTokensRef = useRef(null);
       
       // Refs to track current state (avoid stale closures)
       const currentPageRef = useRef(currentPage);
@@ -2314,6 +2316,10 @@
         setIsSpeaking(true);
         setCurrentWordIndex(0);
 
+        // Store current text and tokens for speed boost changes
+        currentTextRef.current = text;
+        currentPageTokensRef.current = pageTokens;
+
         if (settings.ttsEngine === 'elevenlabs' && settings.elevenLabsKey) {
           speakWithElevenLabs(
             text,
@@ -2340,7 +2346,9 @@
 
       const speakWithBrowserTTS = useCallback((text, pageTokens) => {
         const utterance = new SpeechSynthesisUtterance(text);
-        utterance.rate = speechRate;
+        // Apply speed boost if active
+        const effectiveRate = speechRate * (isSpeedBoosted ? 2 : 1);
+        utterance.rate = effectiveRate;
         utterance.pitch = 1;
 
         const voices = speechSynthesis.getVoices();
@@ -2382,7 +2390,7 @@
 
         utteranceRef.current = utterance;
         speechSynthesis.speak(utterance);
-      }, [speechRate, settings.browserVoice, advanceToNextPage]);
+      }, [speechRate, settings.browserVoice, advanceToNextPage, isSpeedBoosted]);
 
       const goToPage = useCallback((index) => {
         const allPages = pagesRef.current;
@@ -2447,20 +2455,21 @@
 
       // Effect to handle speed boost changes
       useEffect(() => {
-        if (!isSpeaking || !isSpeedBoosted) return;
+        if (!isSpeaking) return;
 
         // Handle ElevenLabs Audio playback rate
         if (audioRef.current) {
-          audioRef.current.playbackRate = 2.0;
+          audioRef.current.playbackRate = isSpeedBoosted ? 2.0 : 1.0;
         }
-      }, [isSpeedBoosted, isSpeaking]);
 
-      // Effect to reset playback rate when speed boost is disabled
-      useEffect(() => {
-        if (!isSpeedBoosted && audioRef.current) {
-          audioRef.current.playbackRate = 1.0;
+        // Handle Browser TTS: restart with new rate
+        if (utteranceRef.current && currentTextRef.current && currentPageTokensRef.current) {
+          // Cancel current utterance
+          speechSynthesis.cancel();
+          // Restart with new rate
+          speakWithBrowserTTS(currentTextRef.current, currentPageTokensRef.current);
         }
-      }, [isSpeedBoosted]);
+      }, [isSpeedBoosted, isSpeaking, speakWithBrowserTTS]);
 
       const handleTouchStart = (e) => {
         setTouchStart(e.touches[0].clientY);
