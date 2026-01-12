@@ -229,7 +229,7 @@
     // ============================================================
     // VERSION & CONSTANTS
     // ============================================================
-    const APP_VERSION = '1.6.6';
+    const APP_VERSION = '1.6.7';
     const BUILD_DATE = '2026-01-12';
 
     // ============================================================
@@ -2294,7 +2294,14 @@
 
         const voices = speechSynthesis.getVoices();
         const selectedVoice = voices.find(v => v.name === settings.browserVoice);
-        if (selectedVoice) utterance.voice = selectedVoice;
+        if (selectedVoice) {
+          utterance.voice = selectedVoice;
+        } else if (voices.length > 0) {
+          // Fallback: use first Italian voice or first available voice
+          const italianVoice = voices.find(v => v.lang.startsWith('it'));
+          utterance.voice = italianVoice || voices[0];
+          console.warn('Selected voice not found, using fallback:', utterance.voice?.name);
+        }
 
         utterance.onboundary = (event) => {
           // Only process events from the current utterance
@@ -2919,6 +2926,16 @@
         loadVoices();
         speechSynthesis.onvoiceschanged = loadVoices;
       }, []);
+
+      // Auto-select first available voice if none is selected
+      useEffect(() => {
+        if (browserVoices.length > 0 && !settings.browserVoice) {
+          // Select first voice (Italian voices are already sorted first)
+          const defaultVoice = browserVoices[0].name;
+          console.log('Auto-selecting default voice:', defaultVoice);
+          setSettings(prev => ({ ...prev, browserVoice: defaultVoice }));
+        }
+      }, [browserVoices, settings.browserVoice]);
 
       useEffect(() => {
         localStorage.setItem('scrollread_settings', JSON.stringify(settings));
