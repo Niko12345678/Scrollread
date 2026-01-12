@@ -577,14 +577,150 @@
       }
     }
 
+    // ============ QUEUE MANAGEMENT WITH GITHUB GIST ============
+
+    // Get queue from localStorage
+    function getQueue() {
+      const stored = localStorage.getItem('scrollread_queue');
+      return stored ? JSON.parse(stored) : [];
+    }
+
+    // Save queue to localStorage
+    function saveQueueLocal(queue) {
+      localStorage.setItem('scrollread_queue', JSON.stringify(queue));
+    }
+
+    // Sync queue with GitHub Gist
+    async function syncQueueWithGist(settings, localQueue = null) {
+      const { githubPat, githubGistId } = settings;
+
+      if (!githubPat || !githubGistId) {
+        // No GitHub config, use local only
+        return localQueue || getQueue();
+      }
+
+      try {
+        // Fetch current Gist content
+        const response = await fetch(`https://api.github.com/gists/${githubGistId}`, {
+          headers: {
+            'Authorization': `token ${githubPat}`,
+            'Accept': 'application/vnd.github.v3+json'
+          }
+        });
+
+        if (!response.ok) {
+          console.warn('Failed to fetch Gist, using local queue');
+          return localQueue || getQueue();
+        }
+
+        const gist = await response.json();
+        const gistContent = gist.files['queue.json']?.content;
+        const remoteQueue = gistContent ? JSON.parse(gistContent) : [];
+
+        // If we have local changes, merge them
+        if (localQueue) {
+          // Merge: combine remote + local, deduplicate by URL
+          const merged = [...remoteQueue];
+          localQueue.forEach(item => {
+            if (!merged.find(m => m.url === item.url)) {
+              merged.push(item);
+            }
+          });
+
+          // Push merged queue back to Gist
+          await fetch(`https://api.github.com/gists/${githubGistId}`, {
+            method: 'PATCH',
+            headers: {
+              'Authorization': `token ${githubPat}`,
+              'Accept': 'application/vnd.github.v3+json',
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              files: {
+                'queue.json': {
+                  content: JSON.stringify(merged, null, 2)
+                }
+              }
+            })
+          });
+
+          saveQueueLocal(merged);
+          return merged;
+        } else {
+          // Just pull from remote
+          saveQueueLocal(remoteQueue);
+          return remoteQueue;
+        }
+      } catch (error) {
+        console.error('Gist sync error:', error);
+        return localQueue || getQueue();
+      }
+    }
+
+    // Add article to queue
+    async function addToQueue(article, settings) {
+      const queue = getQueue();
+
+      // Check if already in queue
+      if (queue.find(item => item.url === article.url)) {
+        throw new Error('Articolo già nella coda');
+      }
+
+      const newItem = {
+        url: article.url,
+        title: article.title || 'Articolo',
+        addedAt: Date.now(),
+        preview: article.preview || ''
+      };
+
+      const newQueue = [newItem, ...queue];
+      saveQueueLocal(newQueue);
+
+      // Sync with Gist
+      await syncQueueWithGist(settings, newQueue);
+
+      return newQueue;
+    }
+
+    // Remove article from queue
+    async function removeFromQueue(url, settings) {
+      const queue = getQueue();
+      const newQueue = queue.filter(item => item.url !== url);
+      saveQueueLocal(newQueue);
+
+      // Sync with Gist
+      await syncQueueWithGist(settings, newQueue);
+
+      return newQueue;
+    }
+
     // ============ LIBRARY SCREEN ============
-    function LibraryScreen({ onBookSelect, savedBooks, onDeleteBook, settings, onOpenSettings }) {
+    function LibraryScreen({ onBookSelect, savedBooks, onDeleteBook, settings, onOpenSettings, onSettingsChange }) {
       const [isLoading, setIsLoading] = useState(false);
       const [error, setError] = useState(null);
       const [articleUrl, setArticleUrl] = useState('');
+      const [readingQueue, setReadingQueue] = useState([]);
+      const [isSyncing, setIsSyncing] = useState(false);
       const fileInputRef = useRef(null);
 
       const theme = THEMES[settings?.theme] || THEMES.dark;
+
+      // Load queue on mount and sync with Gist
+      useEffect(() => {
+        const loadQueue = async () => {
+          setIsSyncing(true);
+          try {
+            const queue = await syncQueueWithGist(settings);
+            setReadingQueue(queue);
+          } catch (err) {
+            console.error('Failed to load queue:', err);
+            setReadingQueue(getQueue());
+          } finally {
+            setIsSyncing(false);
+          }
+        };
+        loadQueue();
+      }, [settings.githubPat, settings.githubGistId]);
 
       const handleFileSelect = async (e) => {
         const file = e.target.files[0];
@@ -621,6 +757,77 @@
         } catch (err) {
           console.error('Article error:', err);
           setError(`⚠️ Impossibile caricare l'articolo: ${err.message || 'URL non valido o contenuto non accessibile'}. Verifica che l'URL sia corretto.`);
+        } finally {
+          setIsLoading(false);
+        }
+      };
+
+      const handleSaveForLater = async () => {
+        if (!articleUrl.trim()) return;
+
+        setIsLoading(true);
+        setError(null);
+
+        try {
+          // Try to fetch title from URL without full parsing
+          let title = articleUrl;
+          try {
+            const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(articleUrl)}`;
+            const response = await fetch(proxyUrl);
+            if (response.ok) {
+              const html = await response.text();
+              const parser = new DOMParser();
+              const doc = parser.parseFromString(html, 'text/html');
+              title = doc.querySelector('title')?.textContent?.trim() ||
+                      doc.querySelector('h1')?.textContent?.trim() ||
+                      doc.querySelector('meta[property="og:title"]')?.getAttribute('content') ||
+                      articleUrl;
+              title = title.split(/[|–—]/)[0].trim();
+            }
+          } catch (e) {
+            // Fallback to URL if fetch fails
+            title = articleUrl;
+          }
+
+          const newQueue = await addToQueue({ url: articleUrl, title }, settings);
+          setReadingQueue(newQueue);
+          setArticleUrl('');
+          setError('✅ Articolo salvato nella coda di lettura!');
+          setTimeout(() => setError(null), 3000);
+        } catch (err) {
+          console.error('Save queue error:', err);
+          if (err.message === 'Articolo già nella coda') {
+            setError('⚠️ Articolo già presente nella coda');
+          } else {
+            setError(`⚠️ Errore nel salvataggio: ${err.message}`);
+          }
+        } finally {
+          setIsLoading(false);
+        }
+      };
+
+      const handleRemoveFromQueue = async (url) => {
+        try {
+          const newQueue = await removeFromQueue(url, settings);
+          setReadingQueue(newQueue);
+        } catch (err) {
+          console.error('Remove from queue error:', err);
+          setError(`⚠️ Errore nella rimozione: ${err.message}`);
+        }
+      };
+
+      const handleOpenFromQueue = async (queueItem) => {
+        setIsLoading(true);
+        setError(null);
+
+        try {
+          const articleData = await parseWebArticle(queueItem.url);
+          // Remove from queue after successful load
+          await handleRemoveFromQueue(queueItem.url);
+          onBookSelect(articleData);
+        } catch (err) {
+          console.error('Open from queue error:', err);
+          setError(`⚠️ Impossibile caricare l'articolo: ${err.message}`);
         } finally {
           setIsLoading(false);
         }
@@ -767,8 +974,31 @@
                 }}
               />
               <button
+                onClick={handleSaveForLater}
+                disabled={isLoading || !articleUrl.trim()}
+                title="Salva per dopo"
+                style={{
+                  padding: '14px 20px',
+                  borderRadius: '12px',
+                  border: `1px solid ${theme.inputBorder}`,
+                  background: theme.cardBg,
+                  color: articleUrl.trim() && !isLoading ? theme.accent : theme.textMuted,
+                  fontSize: '20px',
+                  cursor: articleUrl.trim() && !isLoading ? 'pointer' : 'not-allowed',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  minWidth: '48px',
+                  height: '48px',
+                  transition: 'all 0.2s ease'
+                }}
+              >
+                📌
+              </button>
+              <button
                 onClick={handleUrlSubmit}
                 disabled={isLoading || !articleUrl.trim()}
+                title="Leggi ora"
                 style={{
                   padding: '14px 20px',
                   borderRadius: '12px',
@@ -796,21 +1026,129 @@
               marginTop: '8px',
               textAlign: 'center'
             }}>
-              Incolla un URL per leggere un articolo web
+              📌 Salva per dopo • 🌐 Leggi subito
             </div>
           </div>
 
           {error && (
             <div style={{
-              background: 'rgba(220,80,80,0.1)',
-              border: '1px solid rgba(220,80,80,0.3)',
+              background: error.includes('✅') ? 'rgba(80,220,100,0.1)' : 'rgba(220,80,80,0.1)',
+              border: error.includes('✅') ? '1px solid rgba(80,220,100,0.3)' : '1px solid rgba(220,80,80,0.3)',
               borderRadius: '12px',
               padding: '16px',
               marginBottom: '24px',
-              color: '#e88',
+              color: error.includes('✅') ? '#8e8' : '#e88',
               fontSize: '14px'
             }}>
               {error}
+            </div>
+          )}
+
+          {/* Reading Queue */}
+          {readingQueue.length > 0 && (
+            <div style={{ animation: 'fadeIn 0.5s ease 0.2s both', marginBottom: '32px' }}>
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                marginBottom: '16px'
+              }}>
+                <h2 style={{
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  color: theme.textMuted,
+                  letterSpacing: '0.1em',
+                  textTransform: 'uppercase'
+                }}>
+                  Coda di lettura
+                </h2>
+                {isSyncing && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: theme.accent }}>
+                    <div className="loading-spinner" style={{ width: '12px', height: '12px', borderWidth: '1.5px', borderTopColor: theme.accent }} />
+                    <span>Sync...</span>
+                  </div>
+                )}
+              </div>
+
+              {readingQueue.map((item, idx) => (
+                <div
+                  key={idx}
+                  style={{
+                    background: theme.cardBg,
+                    border: `1px solid ${theme.cardBorder}`,
+                    borderRadius: '12px',
+                    padding: '16px',
+                    marginBottom: '12px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '16px',
+                    transition: 'all 0.2s ease'
+                  }}
+                >
+                  <div style={{
+                    width: '48px',
+                    height: '48px',
+                    background: theme.bgSecondary,
+                    borderRadius: '50%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '20px',
+                    flexShrink: 0
+                  }}>
+                    📌
+                  </div>
+                  <div
+                    onClick={() => handleOpenFromQueue(item)}
+                    style={{ flex: 1, minWidth: 0, cursor: 'pointer' }}
+                  >
+                    <div style={{
+                      color: theme.text,
+                      fontSize: '15px',
+                      fontWeight: 500,
+                      marginBottom: '4px',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis'
+                    }}>
+                      {item.title}
+                    </div>
+                    <div style={{
+                      color: theme.textMuted,
+                      fontSize: '11px',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis'
+                    }}>
+                      {item.url}
+                    </div>
+                    {item.addedAt && (
+                      <div style={{
+                        color: theme.textMuted,
+                        fontSize: '10px',
+                        marginTop: '4px'
+                      }}>
+                        {new Date(item.addedAt).toLocaleDateString('it-IT')}
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleRemoveFromQueue(item.url); }}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: theme.textMuted,
+                      fontSize: '18px',
+                      cursor: 'pointer',
+                      padding: '8px',
+                      flexShrink: 0
+                    }}
+                    title="Rimuovi dalla coda"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
             </div>
           )}
 
@@ -1232,6 +1570,99 @@
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: theme.textMuted, marginTop: '4px' }}>
                 <span>🐢 Lento</span>
                 <span>Veloce 🐇</span>
+              </div>
+            </div>
+
+            {/* GitHub Sync Settings */}
+            <div style={{
+              marginBottom: '24px',
+              paddingTop: '24px',
+              borderTop: `1px solid ${theme.inputBorder}`
+            }}>
+              <label style={{
+                fontSize: '12px',
+                fontWeight: 600,
+                color: theme.textMuted,
+                letterSpacing: '0.05em',
+                textTransform: 'uppercase',
+                display: 'block',
+                marginBottom: '12px'
+              }}>
+                Sync Coda (GitHub Gist)
+              </label>
+
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{
+                  fontSize: '11px',
+                  color: theme.textMuted,
+                  display: 'block',
+                  marginBottom: '8px'
+                }}>
+                  Gist ID
+                </label>
+                <input
+                  type="text"
+                  value={settings.githubGistId || ''}
+                  onChange={e => onSettingsChange({ ...settings, githubGistId: e.target.value })}
+                  placeholder="abc123def456..."
+                  style={{
+                    width: '100%',
+                    padding: '12px 16px',
+                    borderRadius: '8px',
+                    border: `1px solid ${theme.inputBorder}`,
+                    background: theme.inputBg,
+                    color: theme.text,
+                    fontSize: '13px',
+                    outline: 'none',
+                    fontFamily: 'monospace'
+                  }}
+                />
+              </div>
+
+              <div style={{ marginBottom: '12px' }}>
+                <label style={{
+                  fontSize: '11px',
+                  color: theme.textMuted,
+                  display: 'block',
+                  marginBottom: '8px'
+                }}>
+                  Personal Access Token (PAT)
+                </label>
+                <input
+                  type="password"
+                  value={settings.githubPat || ''}
+                  onChange={e => onSettingsChange({ ...settings, githubPat: e.target.value })}
+                  placeholder="ghp_..."
+                  style={{
+                    width: '100%',
+                    padding: '12px 16px',
+                    borderRadius: '8px',
+                    border: `1px solid ${theme.inputBorder}`,
+                    background: theme.inputBg,
+                    color: theme.text,
+                    fontSize: '13px',
+                    outline: 'none',
+                    fontFamily: 'monospace'
+                  }}
+                />
+              </div>
+
+              <div style={{
+                fontSize: '10px',
+                color: theme.textMuted,
+                lineHeight: 1.5,
+                background: theme.cardBg,
+                padding: '12px',
+                borderRadius: '8px',
+                border: `1px solid ${theme.cardBorder}`
+              }}>
+                <strong style={{ display: 'block', marginBottom: '6px', color: theme.text }}>Come configurare:</strong>
+                1. Vai su <strong>gist.github.com</strong><br/>
+                2. Crea una Gist privata con file <code style={{ background: theme.inputBg, padding: '2px 4px', borderRadius: '3px' }}>queue.json</code> contenente <code style={{ background: theme.inputBg, padding: '2px 4px', borderRadius: '3px' }}>[]</code><br/>
+                3. Copia l'ID dalla URL (dopo /gist.github.com/username/)<br/>
+                4. Vai su <strong>github.com/settings/tokens</strong><br/>
+                5. Genera un token con scope <strong>gist</strong><br/>
+                6. Incolla qui sopra ID e token
               </div>
             </div>
 
@@ -1831,7 +2262,9 @@
         browserVoice: '',
         elevenLabsKey: '',
         elevenLabsVoice: ELEVENLABS_VOICES[0].id,
-        theme: 'dark'
+        theme: 'dark',
+        githubPat: '',
+        githubGistId: ''
       });
       const [showSettings, setShowSettings] = useState(false);
       const [browserVoices, setBrowserVoices] = useState([]);
@@ -1901,11 +2334,12 @@
 
       return (
         <>
-          <LibraryScreen 
+          <LibraryScreen
             onBookSelect={handleBookSelect}
             savedBooks={savedBooks}
             settings={settings}
             onOpenSettings={() => setShowSettings(true)}
+            onSettingsChange={setSettings}
           />
           <SettingsModal
             isOpen={showSettings}
