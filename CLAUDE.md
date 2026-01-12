@@ -125,6 +125,33 @@ The README includes detailed Italian instructions for GitHub Pages deployment. K
 - Browser localStorage typically limited to 5-10MB
 - Very large ePubs may exceed storage limits
 
+## Version Management
+
+**CRITICAL**: Always increment `APP_VERSION` in `index.html` (line ~232) when making ANY code changes.
+
+### Version Format
+Use semantic versioning (MAJOR.MINOR.PATCH):
+- **MAJOR**: Breaking changes or major rewrites
+- **MINOR**: New features, significant enhancements
+- **PATCH**: Bug fixes, small improvements
+
+### When to Update
+- **Bug fixes**: Increment PATCH version (e.g., 1.6.0 → 1.6.1)
+- **New features**: Increment MINOR version (e.g., 1.6.1 → 1.7.0)
+- **Breaking changes**: Increment MAJOR version (e.g., 1.7.0 → 2.0.0)
+
+### Required Steps
+1. Update `APP_VERSION` constant in `index.html`
+2. Update `BUILD_DATE` to current date (YYYY-MM-DD format)
+3. Include version change in commit message
+4. Never commit code changes without updating version
+
+### Example
+```javascript
+const APP_VERSION = '1.6.1'; // Was 1.6.0
+const BUILD_DATE = '2026-01-12'; // Updated to today
+```
+
 ## Debugging Tips
 
 ### Service Worker Issues
