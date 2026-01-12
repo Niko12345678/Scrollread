@@ -81,6 +81,139 @@
       border-radius: 50%;
       animation: spin 0.8s linear infinite;
     }
+
+    /* ========== UTILITY CLASSES ========== */
+
+    /* Button Styles */
+    .btn {
+      border: none;
+      border-radius: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    .btn-primary {
+      padding: 16px 32px;
+      background: linear-gradient(135deg, #e8c9a8, #d4a574);
+      color: #0a0a0a;
+      font-size: 16px;
+    }
+
+    .btn-secondary {
+      padding: 12px 24px;
+      background: transparent;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: #fff;
+      font-size: 14px;
+    }
+
+    .btn-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      padding: 0;
+    }
+
+    .btn-icon-lg {
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      padding: 0;
+      font-size: 24px;
+    }
+
+    /* Card Styles */
+    .card {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 16px;
+      transition: all 0.2s ease;
+    }
+
+    .card-clickable {
+      cursor: pointer;
+    }
+
+    .card-clickable:hover {
+      background: rgba(255, 255, 255, 0.05);
+      border-color: rgba(255, 255, 255, 0.12);
+    }
+
+    /* Input Styles */
+    .input {
+      width: 100%;
+      padding: 16px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      color: #fff;
+      font-size: 14px;
+      font-family: inherit;
+      transition: all 0.2s ease;
+    }
+
+    .input:focus {
+      outline: none;
+      border-color: #d4a574;
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .input::placeholder {
+      color: rgba(255, 255, 255, 0.3);
+    }
+
+    /* Text Styles */
+    .text-muted {
+      color: rgba(255, 255, 255, 0.5);
+    }
+
+    .text-small {
+      font-size: 12px;
+    }
+
+    .text-xs {
+      font-size: 11px;
+    }
+
+    .section-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: rgba(255, 255, 255, 0.5);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      margin-bottom: 16px;
+    }
+
+    /* Layout */
+    .flex-center {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .flex-between {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    /* Spacing */
+    .gap-8 { gap: 8px; }
+    .gap-12 { gap: 12px; }
+    .gap-16 { gap: 16px; }
+    .gap-24 { gap: 24px; }
+
+    .mb-8 { margin-bottom: 8px; }
+    .mb-12 { margin-bottom: 12px; }
+    .mb-16 { margin-bottom: 16px; }
+    .mb-24 { margin-bottom: 24px; }
+    .mb-32 { margin-bottom: 32px; }
   </style>
 </head>
 <body>
@@ -93,111 +226,81 @@
   <script type="text/babel">
     const { useState, useEffect, useRef, useCallback } = React;
 
-    // ============ VERSION ============
+    // ============================================================
+    // VERSION & CONSTANTS
+    // ============================================================
     const APP_VERSION = '1.6.0';
     const BUILD_DATE = '2026-01-12';
 
-    // ============ EPUB PARSER (using JSZip directly) ============
-    async function parseEpub(file) {
-      try {
-        const zip = await JSZip.loadAsync(file);
-        
-        // Check for DRM/encryption FIRST
-        const encryptionFile = zip.file('META-INF/encryption.xml');
-        if (encryptionFile) {
-          const encContent = await encryptionFile.async('text');
-          if (encContent.includes('http://www.w3.org/2001/04/xmlenc#') || 
-              encContent.includes('adobe.com/adept') ||
-              encContent.includes('EncryptedData') ||
-              encContent.includes('EncryptionMethod')) {
-            throw new Error('DRM_PROTECTED');
-          }
+    // ============================================================
+    // EPUB PARSER MODULE
+    // ============================================================
+    const EpubParser = (() => {
+      // Check if content contains DRM markers
+      const checkDRM = (encContent) => {
+        return encContent.includes('http://www.w3.org/2001/04/xmlenc#') ||
+               encContent.includes('adobe.com/adept') ||
+               encContent.includes('EncryptedData') ||
+               encContent.includes('EncryptionMethod');
+      };
+
+      // Read file with proper encoding detection
+      const readFileAsText = async (zipFile) => {
+        const uint8 = await zipFile.async('uint8array');
+
+        // Try to detect encoding from XML declaration or meta tag
+        const preview = new TextDecoder('utf-8', { fatal: false }).decode(uint8.slice(0, 1000));
+        let encoding = 'utf-8';
+
+        // Check XML declaration: <?xml version="1.0" encoding="..."?>
+        const xmlMatch = preview.match(/encoding=["']([^"']+)["']/i);
+        if (xmlMatch) {
+          encoding = xmlMatch[1].toLowerCase();
         }
-        
-        // Helper to read file with proper encoding detection
-        async function readFileAsText(zipFile) {
-          const uint8 = await zipFile.async('uint8array');
-          
-          // Try to detect encoding from XML declaration or meta tag
-          const preview = new TextDecoder('utf-8', { fatal: false }).decode(uint8.slice(0, 1000));
-          let encoding = 'utf-8';
-          
-          // Check XML declaration: <?xml version="1.0" encoding="..."?>
-          const xmlMatch = preview.match(/encoding=["']([^"']+)["']/i);
-          if (xmlMatch) {
-            encoding = xmlMatch[1].toLowerCase();
-          }
-          
-          // Check HTML meta: <meta charset="..."> or <meta http-equiv="Content-Type" content="...; charset=...">
-          const metaMatch = preview.match(/charset=["']?([^"'\s;>]+)/i);
-          if (metaMatch) {
-            encoding = metaMatch[1].toLowerCase();
-          }
-          
-          // Normalize common encoding names
-          const encodingMap = {
-            'iso-8859-1': 'iso-8859-1',
-            'latin1': 'iso-8859-1',
-            'latin-1': 'iso-8859-1',
-            'windows-1252': 'windows-1252',
-            'cp1252': 'windows-1252',
-            'utf8': 'utf-8',
-            'utf-8': 'utf-8'
-          };
-          encoding = encodingMap[encoding] || 'utf-8';
-          
-          try {
-            return new TextDecoder(encoding).decode(uint8);
-          } catch (e) {
-            // Fallback to UTF-8 with replacement
-            return new TextDecoder('utf-8', { fatal: false }).decode(uint8);
-          }
+
+        // Check HTML meta: <meta charset="...">
+        const metaMatch = preview.match(/charset=["']?([^"'\s;>]+)/i);
+        if (metaMatch) {
+          encoding = metaMatch[1].toLowerCase();
         }
-        
-        // Find container.xml to get the OPF file path
-        const containerFile = zip.file('META-INF/container.xml');
-        if (!containerFile) {
-          throw new Error('Invalid ePub: missing container.xml');
+
+        // Normalize common encoding names
+        const encodingMap = {
+          'iso-8859-1': 'iso-8859-1',
+          'latin1': 'iso-8859-1',
+          'latin-1': 'iso-8859-1',
+          'windows-1252': 'windows-1252',
+          'cp1252': 'windows-1252',
+          'utf8': 'utf-8',
+          'utf-8': 'utf-8'
+        };
+        encoding = encodingMap[encoding] || 'utf-8';
+
+        try {
+          return new TextDecoder(encoding).decode(uint8);
+        } catch (e) {
+          // Fallback to UTF-8 with replacement
+          return new TextDecoder('utf-8', { fatal: false }).decode(uint8);
         }
-        const containerXml = await readFileAsText(containerFile);
-        
-        // Parse container to find OPF path
-        const parser = new DOMParser();
-        const containerDoc = parser.parseFromString(containerXml, 'text/xml');
-        const rootfileEl = containerDoc.querySelector('rootfile');
-        const opfPath = rootfileEl?.getAttribute('full-path');
-        
-        if (!opfPath) {
-          throw new Error('Invalid ePub: cannot find OPF path');
-        }
-        
-        // Get the base directory of the OPF file
-        const opfDir = opfPath.substring(0, opfPath.lastIndexOf('/') + 1);
-        
-        // Load and parse the OPF file
-        const opfFile = zip.file(opfPath);
-        if (!opfFile) {
-          throw new Error('Invalid ePub: cannot read OPF file');
-        }
-        const opfContent = await readFileAsText(opfFile);
-        
-        const opfDoc = parser.parseFromString(opfContent, 'text/xml');
-        
-        // Get metadata (try multiple namespace variations)
-        const titleEl = opfDoc.querySelector('title') || 
+      };
+
+      // Extract metadata from OPF document
+      const extractMetadata = (opfDoc, fileName) => {
+        const titleEl = opfDoc.querySelector('title') ||
                         opfDoc.querySelector('dc\\:title') ||
                         opfDoc.querySelector('*|title');
-        const creatorEl = opfDoc.querySelector('creator') || 
+        const creatorEl = opfDoc.querySelector('creator') ||
                           opfDoc.querySelector('dc\\:creator') ||
                           opfDoc.querySelector('*|creator');
-        const title = titleEl?.textContent?.trim() || file.name.replace('.epub', '');
-        const author = creatorEl?.textContent?.trim() || 'Autore sconosciuto';
-        
-        // Get spine order (reading order)
-        const spineItems = opfDoc.querySelectorAll('spine itemref');
-        const manifest = opfDoc.querySelectorAll('manifest item');
-        
-        // Create a map of id -> href from manifest
+
+        return {
+          title: titleEl?.textContent?.trim() || fileName.replace('.epub', ''),
+          author: creatorEl?.textContent?.trim() || 'Autore sconosciuto'
+        };
+      };
+
+      // Build manifest map from OPF
+      const buildManifestMap = (manifest) => {
         const manifestMap = {};
         manifest.forEach(item => {
           const id = item.getAttribute('id');
@@ -207,225 +310,308 @@
             manifestMap[id] = { href: decodeURIComponent(href), mediaType };
           }
         });
-        
-        // Extract text from each spine item in order
-        let fullText = '';
+        return manifestMap;
+      };
+
+      // Try multiple path variations to find a file in zip
+      const findFileInZip = async (zip, manifestItem, opfDir) => {
+        const pathsToTry = [
+          opfDir + manifestItem.href,
+          manifestItem.href,
+          (opfDir + manifestItem.href).replace(/^\//, ''),
+          manifestItem.href.replace(/^\//, ''),
+          opfDir + encodeURIComponent(manifestItem.href),
+        ];
+
+        for (const path of pathsToTry) {
+          let f = zip.file(path);
+          if (!f) {
+            // Try case-insensitive search
+            const files = zip.file(new RegExp('^' + path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i'));
+            if (files.length > 0) f = files[0];
+          }
+          if (f) {
+            return f;
+          }
+        }
+        return null;
+      };
+
+      // Extract text from HTML content
+      const extractTextFromHtml = (htmlContent, parser) => {
+        const htmlDoc = parser.parseFromString(htmlContent, 'text/html');
+        const body = htmlDoc.body || htmlDoc.querySelector('body');
+
+        if (!body) return '';
+
+        // Remove scripts, styles, and navigation
+        body.querySelectorAll('script, style, nav, header, footer').forEach(el => el.remove());
+
+        // Get text content, preserving some structure
+        let text = '';
+        const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT, null, false);
+        while (walker.nextNode()) {
+          const nodeText = walker.currentNode.textContent;
+          if (nodeText.trim()) {
+            text += nodeText + ' ';
+          }
+        }
+
+        return text.replace(/\s+/g, ' ').trim();
+      };
+
+      // Extract all chapters from spine
+      const extractChapters = async (zip, spineItems, manifestMap, opfDir, parser) => {
         const chapters = [];
-        
+        let fullText = '';
+
         for (const itemref of spineItems) {
           const idref = itemref.getAttribute('idref');
           const manifestItem = manifestMap[idref];
-          
+
           if (!manifestItem) continue;
-          
+
           // Only process HTML/XHTML files
           const mediaType = manifestItem.mediaType || '';
           if (!mediaType.includes('html') && !mediaType.includes('xml') && !mediaType.includes('xhtml')) {
             continue;
           }
-          
-          // Try different path variations
-          const pathsToTry = [
-            opfDir + manifestItem.href,
-            manifestItem.href,
-            (opfDir + manifestItem.href).replace(/^\//, ''),
-            manifestItem.href.replace(/^\//, ''),
-            // Handle URL-encoded paths
-            opfDir + encodeURIComponent(manifestItem.href),
-          ];
-          
-          let content = null;
-          for (const path of pathsToTry) {
-            // Also try case-insensitive search
-            let f = zip.file(path);
-            if (!f) {
-              // Try to find file case-insensitively
-              const files = zip.file(new RegExp('^' + path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i'));
-              if (files.length > 0) f = files[0];
-            }
-            if (f) {
-              content = await readFileAsText(f);
-              break;
-            }
-          }
-          
-          if (!content) continue;
-          
+
+          const file = await findFileInZip(zip, manifestItem, opfDir);
+          if (!file) continue;
+
+          const content = await readFileAsText(file);
+
           // Check if content looks encrypted (binary garbage)
           const nonPrintable = (content.match(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g) || []).length;
           if (nonPrintable > content.length * 0.05) {
             throw new Error('DRM_PROTECTED');
           }
-          
-          // Parse HTML and extract text
-          const htmlDoc = parser.parseFromString(content, 'text/html');
-          const body = htmlDoc.body || htmlDoc.querySelector('body');
-          
-          if (body) {
-            // Remove scripts, styles, and navigation
-            body.querySelectorAll('script, style, nav, header, footer').forEach(el => el.remove());
-            
-            // Get text content, preserving some structure
-            let text = '';
-            const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT, null, false);
-            while (walker.nextNode()) {
-              const nodeText = walker.currentNode.textContent;
-              if (nodeText.trim()) {
-                text += nodeText + ' ';
-              }
-            }
-            
-            text = text.replace(/\s+/g, ' ').trim();
-            
-            if (text.length > 50) {
-              chapters.push({
-                title: `Capitolo ${chapters.length + 1}`,
-                text: text
-              });
-              fullText += text + ' ';
-            }
+
+          const text = extractTextFromHtml(content, parser);
+
+          if (text.length > 50) {
+            chapters.push({
+              title: `Capitolo ${chapters.length + 1}`,
+              text: text
+            });
+            fullText += text + ' ';
           }
         }
-        
-        if (fullText.trim().length < 100) {
-          throw new Error('Could not extract text from ePub');
+
+        return { chapters, fullText: fullText.trim() };
+      };
+
+      // Main parse function
+      const parse = async (file) => {
+        try {
+          const zip = await JSZip.loadAsync(file);
+
+          // Check for DRM/encryption FIRST
+          const encryptionFile = zip.file('META-INF/encryption.xml');
+          if (encryptionFile) {
+            const encContent = await encryptionFile.async('text');
+            if (checkDRM(encContent)) {
+              throw new Error('DRM_PROTECTED');
+            }
+          }
+
+          // Find container.xml to get the OPF file path
+          const containerFile = zip.file('META-INF/container.xml');
+          if (!containerFile) {
+            throw new Error('Invalid ePub: missing container.xml');
+          }
+          const containerXml = await readFileAsText(containerFile);
+
+          // Parse container to find OPF path
+          const parser = new DOMParser();
+          const containerDoc = parser.parseFromString(containerXml, 'text/xml');
+          const rootfileEl = containerDoc.querySelector('rootfile');
+          const opfPath = rootfileEl?.getAttribute('full-path');
+
+          if (!opfPath) {
+            throw new Error('Invalid ePub: cannot find OPF path');
+          }
+
+          // Get the base directory of the OPF file
+          const opfDir = opfPath.substring(0, opfPath.lastIndexOf('/') + 1);
+
+          // Load and parse the OPF file
+          const opfFile = zip.file(opfPath);
+          if (!opfFile) {
+            throw new Error('Invalid ePub: cannot read OPF file');
+          }
+          const opfContent = await readFileAsText(opfFile);
+          const opfDoc = parser.parseFromString(opfContent, 'text/xml');
+
+          // Get metadata
+          const metadata = extractMetadata(opfDoc, file.name);
+
+          // Get spine order and manifest
+          const spineItems = opfDoc.querySelectorAll('spine itemref');
+          const manifest = opfDoc.querySelectorAll('manifest item');
+          const manifestMap = buildManifestMap(manifest);
+
+          // Extract text from all chapters
+          const { chapters, fullText } = await extractChapters(zip, spineItems, manifestMap, opfDir, parser);
+
+          if (fullText.length < 100) {
+            throw new Error('Could not extract text from ePub');
+          }
+
+          return {
+            title: metadata.title,
+            author: metadata.author,
+            chapters,
+            fullText
+          };
+
+        } catch (error) {
+          console.error('ePub parsing error:', error);
+          throw error;
         }
-        
-        return {
-          title,
-          author,
-          chapters,
-          fullText: fullText.trim()
-        };
-        
-      } catch (error) {
-        console.error('ePub parsing error:', error);
-        throw error;
-      }
-    }
+      };
 
-    // ============ TEXT CHUNKER ============
-    function chunkText(text, targetWords = 40) {
-      const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
-      const chunks = [];
-      let currentChunk = '';
-      let currentWords = 0;
+      return { parse };
+    })();
 
-      sentences.forEach(sentence => {
-        const sentenceWords = sentence.trim().split(/\s+/).length;
-        
-        if (currentWords + sentenceWords > targetWords && currentChunk) {
-          chunks.push(currentChunk.trim());
-          currentChunk = sentence;
-          currentWords = sentenceWords;
-        } else {
-          currentChunk += ' ' + sentence;
-          currentWords += sentenceWords;
-        }
-      });
+    // ============================================================
+    // TEXT UTILITIES MODULE
+    // ============================================================
+    const TextUtils = (() => {
+      // Split text into chunks of approximately targetWords words
+      const chunkText = (text, targetWords = 40) => {
+        const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+        const chunks = [];
+        let currentChunk = '';
+        let currentWords = 0;
 
-      if (currentChunk.trim()) {
-        chunks.push(currentChunk.trim());
-      }
+        sentences.forEach(sentence => {
+          const sentenceWords = sentence.trim().split(/\s+/).length;
 
-      return chunks;
-    }
-
-    function tokenizeWithPositions(text) {
-      const tokens = [];
-      const regex = /(\S+)/g;
-      let match;
-
-      while ((match = regex.exec(text)) !== null) {
-        tokens.push({
-          word: match[1],
-          start: match.index,
-          end: match.index + match[1].length
+          if (currentWords + sentenceWords > targetWords && currentChunk) {
+            chunks.push(currentChunk.trim());
+            currentChunk = sentence;
+            currentWords = sentenceWords;
+          } else {
+            currentChunk += ' ' + sentence;
+            currentWords += sentenceWords;
+          }
         });
-      }
 
-      return tokens;
-    }
+        if (currentChunk.trim()) {
+          chunks.push(currentChunk.trim());
+        }
 
-    // ============ LANGUAGE DETECTION ============
-    function detectLanguage(text) {
-      // Take first 500 words for analysis
-      const words = text.toLowerCase()
-        .replace(/[^\w\s]/g, ' ')
-        .split(/\s+/)
-        .filter(w => w.length > 2)
-        .slice(0, 500);
-
-      if (words.length === 0) return 'it'; // Default to Italian
-
-      // Language-specific common words
-      const languagePatterns = {
-        it: ['che', 'della', 'per', 'con', 'sono', 'una', 'degli', 'nella', 'alla', 'questo', 'anche', 'essere', 'come', 'più', 'suo', 'stato', 'quando', 'molto', 'però', 'ancora'],
-        en: ['the', 'and', 'for', 'with', 'are', 'have', 'this', 'that', 'from', 'they', 'been', 'have', 'their', 'which', 'about', 'would', 'there', 'could', 'these', 'when'],
-        fr: ['les', 'des', 'pour', 'dans', 'que', 'qui', 'une', 'avec', 'est', 'sont', 'par', 'sur', 'pas', 'plus', 'peut', 'tout', 'comme', 'mais', 'été', 'cette'],
-        de: ['der', 'die', 'das', 'und', 'den', 'dem', 'des', 'ein', 'eine', 'ist', 'nicht', 'auch', 'sich', 'von', 'mit', 'wird', 'oder', 'sie', 'aber', 'aus'],
-        es: ['los', 'las', 'del', 'que', 'para', 'con', 'una', 'por', 'como', 'más', 'pero', 'sus', 'les', 'ese', 'esta', 'son', 'todo', 'también', 'fue', 'era']
+        return chunks;
       };
 
-      // Count matches for each language
-      const scores = {};
-      for (const [lang, patterns] of Object.entries(languagePatterns)) {
-        scores[lang] = 0;
-        for (const word of words) {
-          if (patterns.includes(word)) {
-            scores[lang]++;
+      // Create word position map for karaoke highlighting
+      const tokenizeWithPositions = (text) => {
+        const tokens = [];
+        const regex = /(\S+)/g;
+        let match;
+
+        while ((match = regex.exec(text)) !== null) {
+          tokens.push({
+            word: match[1],
+            start: match.index,
+            end: match.index + match[1].length
+          });
+        }
+
+        return tokens;
+      };
+
+      // Detect language from text sample
+      const detectLanguage = (text) => {
+        // Take first 500 words for analysis
+        const words = text.toLowerCase()
+          .replace(/[^\w\s]/g, ' ')
+          .split(/\s+/)
+          .filter(w => w.length > 2)
+          .slice(0, 500);
+
+        if (words.length === 0) return 'it'; // Default to Italian
+
+        // Language-specific common words
+        const languagePatterns = {
+          it: ['che', 'della', 'per', 'con', 'sono', 'una', 'degli', 'nella', 'alla', 'questo', 'anche', 'essere', 'come', 'più', 'suo', 'stato', 'quando', 'molto', 'però', 'ancora'],
+          en: ['the', 'and', 'for', 'with', 'are', 'have', 'this', 'that', 'from', 'they', 'been', 'have', 'their', 'which', 'about', 'would', 'there', 'could', 'these', 'when'],
+          fr: ['les', 'des', 'pour', 'dans', 'que', 'qui', 'une', 'avec', 'est', 'sont', 'par', 'sur', 'pas', 'plus', 'peut', 'tout', 'comme', 'mais', 'été', 'cette'],
+          de: ['der', 'die', 'das', 'und', 'den', 'dem', 'des', 'ein', 'eine', 'ist', 'nicht', 'auch', 'sich', 'von', 'mit', 'wird', 'oder', 'sie', 'aber', 'aus'],
+          es: ['los', 'las', 'del', 'que', 'para', 'con', 'una', 'por', 'como', 'más', 'pero', 'sus', 'les', 'ese', 'esta', 'son', 'todo', 'también', 'fue', 'era']
+        };
+
+        // Count matches for each language
+        const scores = {};
+        for (const [lang, patterns] of Object.entries(languagePatterns)) {
+          scores[lang] = 0;
+          for (const word of words) {
+            if (patterns.includes(word)) {
+              scores[lang]++;
+            }
           }
         }
-      }
 
-      // Find language with highest score
-      let maxScore = 0;
-      let detectedLang = 'it';
-      for (const [lang, score] of Object.entries(scores)) {
-        if (score > maxScore) {
-          maxScore = score;
-          detectedLang = lang;
+        // Find language with highest score
+        let maxScore = 0;
+        let detectedLang = 'it';
+        for (const [lang, score] of Object.entries(scores)) {
+          if (score > maxScore) {
+            maxScore = score;
+            detectedLang = lang;
+          }
         }
-      }
 
-      // If no clear match, default to Italian
-      if (maxScore < 3) {
-        detectedLang = 'it';
-      }
+        // If no clear match, default to Italian
+        if (maxScore < 3) {
+          detectedLang = 'it';
+        }
 
-      console.log('Language detection scores:', scores, '→ Detected:', detectedLang);
-      return detectedLang;
-    }
-
-    // Auto-select best voice for detected language
-    function selectVoiceForLanguage(detectedLang, availableVoices) {
-      if (!availableVoices || availableVoices.length === 0) return null;
-
-      // Map language codes to voice preferences
-      const langMap = {
-        'it': ['it-IT', 'it'],
-        'en': ['en-GB', 'en-US', 'en'],
-        'fr': ['fr-FR', 'fr'],
-        'de': ['de-DE', 'de'],
-        'es': ['es-ES', 'es']
+        console.log('Language detection scores:', scores, '→ Detected:', detectedLang);
+        return detectedLang;
       };
 
-      const preferredLangs = langMap[detectedLang] || ['it-IT', 'it'];
+      // Auto-select best voice for detected language
+      const selectVoiceForLanguage = (detectedLang, availableVoices) => {
+        if (!availableVoices || availableVoices.length === 0) return '';
 
-      // Try to find a voice matching the preferred languages
-      for (const prefLang of preferredLangs) {
-        const voice = availableVoices.find(v => v.lang.startsWith(prefLang));
-        if (voice) {
-          console.log('Auto-selected voice:', voice.name, '(', voice.lang, ')');
-          return voice.name;
+        const langCodes = {
+          it: ['it-IT', 'it'],
+          en: ['en-US', 'en-GB', 'en'],
+          fr: ['fr-FR', 'fr'],
+          de: ['de-DE', 'de'],
+          es: ['es-ES', 'es']
+        };
+
+        const preferredCodes = langCodes[detectedLang] || ['it-IT', 'it'];
+
+        // Try to find voice matching preferred language codes
+        for (const code of preferredCodes) {
+          const voice = availableVoices.find(v => v.lang.startsWith(code));
+          if (voice) {
+            return voice.name;
+          }
         }
-      }
 
-      // Fallback: return first available voice
-      return availableVoices[0]?.name || null;
-    }
+        // Fallback: return first available voice
+        return availableVoices[0]?.name || '';
+      };
 
-    // ============ ELEVENLABS TTS ============
+      return {
+        chunkText,
+        tokenizeWithPositions,
+        detectLanguage,
+        selectVoiceForLanguage
+      };
+    })();
+
+    // ============================================================
+    // APP CONSTANTS
+    // ============================================================
+
+    // ElevenLabs voice options
     const ELEVENLABS_VOICES = [
       { id: 'EXAVITQu4vr4xnSDxMaL', name: 'Sarah (femminile)', lang: 'it' },
       { id: 'TX3LPaxmHKxFdv7VOQHJ', name: 'Liam (maschile)', lang: 'it' },
@@ -1067,7 +1253,7 @@
         setError(null);
 
         try {
-          const bookData = await parseEpub(file);
+          const bookData = await EpubParser.parse(file);
           onBookSelect(bookData);
         } catch (err) {
           console.error('ePub error:', err);
@@ -2203,7 +2389,7 @@
       const speechRate = wpm / 150;
 
       useEffect(() => {
-        const chunks = chunkText(book.fullText);
+        const chunks = TextUtils.chunkText(book.fullText);
         setPages(chunks);
         pagesRef.current = chunks;
 
@@ -2232,7 +2418,7 @@
 
       useEffect(() => {
         if (pages[currentPage]) {
-          const newTokens = tokenizeWithPositions(pages[currentPage]);
+          const newTokens = TextUtils.tokenizeWithPositions(pages[currentPage]);
           setTokens(newTokens);
           tokensRef.current = newTokens;
           setCurrentWordIndex(-1);
@@ -2299,7 +2485,7 @@
 
           // Small delay then speak next page
           setTimeout(() => {
-            const newTokens = tokenizeWithPositions(allPages[nextPage]);
+            const newTokens = TextUtils.tokenizeWithPositions(allPages[nextPage]);
             setTokens(newTokens);
             tokensRef.current = newTokens;
             speakText(allPages[nextPage], newTokens);
@@ -2404,7 +2590,7 @@
         
         setTimeout(() => {
           setIsTransitioning(false);
-          const newTokens = tokenizeWithPositions(allPages[index]);
+          const newTokens = TextUtils.tokenizeWithPositions(allPages[index]);
           setTokens(newTokens);
           tokensRef.current = newTokens;
           
@@ -2959,10 +3145,10 @@
 
       const handleBookSelect = (book) => {
         // Detect language and auto-select voice
-        const detectedLang = detectLanguage(book.fullText);
+        const detectedLang = TextUtils.detectLanguage(book.fullText);
 
         // Auto-select browser voice based on detected language
-        const selectedVoice = selectVoiceForLanguage(detectedLang, browserVoices);
+        const selectedVoice = TextUtils.selectVoiceForLanguage(detectedLang, browserVoices);
         if (selectedVoice && selectedVoice !== settings.browserVoice) {
           const newSettings = { ...settings, browserVoice: selectedVoice };
           setSettings(newSettings);
