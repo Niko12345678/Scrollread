@@ -2095,8 +2095,10 @@
       const [tokens, setTokens] = useState([]);
       const [isTransitioning, setIsTransitioning] = useState(false);
       const [touchStart, setTouchStart] = useState(null);
-      
+      const [isSpeedBoosted, setIsSpeedBoosted] = useState(false);
+
       const hideUITimeout = useRef(null);
+      const holdTimeoutRef = useRef(null);
       const audioRef = useRef(null);
       const utteranceRef = useRef(null);
       const elevenLabsIntervalRef = useRef(null);
@@ -2338,12 +2340,139 @@
         }
       }, [stopSpeaking, speakText]);
 
+      // Speed boost functions (for long press acceleration like Instagram/TikTok)
+      const enableSpeedBoost = useCallback(() => {
+        if (!isSpeaking) return;
+        setIsSpeedBoosted(true);
+      }, [isSpeaking]);
+
+      const disableSpeedBoost = useCallback(() => {
+        setIsSpeedBoosted(false);
+      }, []);
+
+      // Cleanup effect for hold timeout and speed boost
+      useEffect(() => {
+        return () => {
+          if (holdTimeoutRef.current) {
+            clearTimeout(holdTimeoutRef.current);
+            holdTimeoutRef.current = null;
+          }
+        };
+      }, []);
+
+      // Reset speed boost when speaking stops
+      useEffect(() => {
+        if (!isSpeaking && isSpeedBoosted) {
+          setIsSpeedBoosted(false);
+        }
+      }, [isSpeaking, isSpeedBoosted]);
+
+      // Effect to handle speed boost changes
+      useEffect(() => {
+        if (!isSpeaking) return;
+
+        // Handle ElevenLabs Audio playback rate
+        if (audioRef.current) {
+          audioRef.current.playbackRate = isSpeedBoosted ? 2.0 : 1.0;
+        }
+
+        // Handle Browser TTS speed change
+        // Note: Web Speech API doesn't support changing rate during playback
+        // We need to cancel and restart with new rate from current position
+        if (settings.ttsEngine !== 'elevenlabs' && utteranceRef.current) {
+          const currentIdx = currentWordIndex;
+
+          // Only restart if we're in the middle of speaking
+          if (currentIdx >= 0 && tokens.length > 0) {
+            // Stop current speech
+            speechSynthesis.cancel();
+            utteranceRef.current = null;
+
+            // Get remaining text from current word
+            const remainingTokens = tokens.slice(currentIdx);
+            const remainingText = remainingTokens.map(t => t.word).join(' ');
+
+            if (remainingText) {
+              // Create new utterance with updated rate
+              const newRate = isSpeedBoosted ? speechRate * 2 : speechRate;
+              const utterance = new SpeechSynthesisUtterance(remainingText);
+              utterance.rate = newRate;
+              utterance.pitch = 1;
+
+              const voices = speechSynthesis.getVoices();
+              const selectedVoice = voices.find(v => v.name === settings.browserVoice);
+              if (selectedVoice) utterance.voice = selectedVoice;
+
+              // Adjust token indices for the remaining tokens
+              let charOffset = 0;
+              const adjustedTokens = remainingTokens.map((token, idx) => ({
+                word: token.word,
+                start: charOffset,
+                end: charOffset + token.word.length
+              })).map((token, idx) => {
+                const result = { ...token, start: charOffset, end: charOffset + token.word.length };
+                charOffset += token.word.length + (idx < remainingTokens.length - 1 ? 1 : 0);
+                return result;
+              });
+
+              utterance.onboundary = (event) => {
+                if (utteranceRef.current !== utterance) return;
+                if (event.name === 'word') {
+                  const charIndex = event.charIndex;
+                  const tokenIndex = adjustedTokens.findIndex(t =>
+                    charIndex >= t.start && charIndex < t.end
+                  );
+                  if (tokenIndex !== -1) {
+                    setCurrentWordIndex(currentIdx + tokenIndex);
+                  }
+                }
+              };
+
+              utterance.onend = () => {
+                if (utteranceRef.current !== utterance) return;
+                setIsSpeaking(false);
+                setCurrentWordIndex(-1);
+                setTimeout(advanceToNextPage, 300);
+              };
+
+              utterance.onerror = (event) => {
+                if (utteranceRef.current !== utterance) return;
+                console.error('Speech synthesis error:', event.error);
+                setIsSpeaking(false);
+                setCurrentWordIndex(-1);
+              };
+
+              utteranceRef.current = utterance;
+              speechSynthesis.speak(utterance);
+            }
+          }
+        }
+      }, [isSpeedBoosted, isSpeaking, settings.ttsEngine, settings.browserVoice, speechRate, currentWordIndex, tokens, advanceToNextPage]);
+
       const handleTouchStart = (e) => {
         setTouchStart(e.touches[0].clientY);
         setShowUI(true);
+
+        // Start long press timer for speed boost (activate after 200ms)
+        if (isSpeaking) {
+          holdTimeoutRef.current = setTimeout(() => {
+            enableSpeedBoost();
+          }, 200);
+        }
       };
 
       const handleTouchEnd = (e) => {
+        // Cancel long press timer
+        if (holdTimeoutRef.current) {
+          clearTimeout(holdTimeoutRef.current);
+          holdTimeoutRef.current = null;
+        }
+
+        // Disable speed boost if active
+        if (isSpeedBoosted) {
+          disableSpeedBoost();
+        }
+
         if (!touchStart) return;
         const touchEnd = e.changedTouches[0].clientY;
         const diff = touchStart - touchEnd;
@@ -2352,6 +2481,56 @@
           if (diff > 0) goToPage(currentPageRef.current + 1);
           else goToPage(currentPageRef.current - 1);
         }
+        setTouchStart(null);
+      };
+
+      const handleMouseDown = (e) => {
+        // Start long press timer for speed boost (activate immediately on mouse)
+        if (isSpeaking) {
+          holdTimeoutRef.current = setTimeout(() => {
+            enableSpeedBoost();
+          }, 200);
+        }
+      };
+
+      const handleMouseUp = (e) => {
+        // Cancel long press timer
+        if (holdTimeoutRef.current) {
+          clearTimeout(holdTimeoutRef.current);
+          holdTimeoutRef.current = null;
+        }
+
+        // Disable speed boost if active
+        if (isSpeedBoosted) {
+          disableSpeedBoost();
+        }
+      };
+
+      const handleMouseLeave = (e) => {
+        // Cancel long press timer when mouse leaves the area
+        if (holdTimeoutRef.current) {
+          clearTimeout(holdTimeoutRef.current);
+          holdTimeoutRef.current = null;
+        }
+
+        // Disable speed boost if active
+        if (isSpeedBoosted) {
+          disableSpeedBoost();
+        }
+      };
+
+      const handleTouchCancel = (e) => {
+        // Cancel long press timer when touch is interrupted
+        if (holdTimeoutRef.current) {
+          clearTimeout(holdTimeoutRef.current);
+          holdTimeoutRef.current = null;
+        }
+
+        // Disable speed boost if active
+        if (isSpeedBoosted) {
+          disableSpeedBoost();
+        }
+
         setTouchStart(null);
       };
 
@@ -2419,9 +2598,13 @@
       };
 
       return (
-        <div 
+        <div
           onTouchStart={handleTouchStart}
           onTouchEnd={handleTouchEnd}
+          onTouchCancel={handleTouchCancel}
+          onMouseDown={handleMouseDown}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseLeave}
           onWheel={handleWheel}
           onClick={() => setShowUI(true)}
           style={{
@@ -2578,6 +2761,31 @@
                 borderRadius: '2px',
                 transition: 'height 0.15s ease-out'
               }} />
+            </div>
+          )}
+
+          {/* Speed boost indicator */}
+          {isSpeedBoosted && (
+            <div style={{
+              position: 'absolute',
+              right: '16px',
+              top: '50%',
+              transform: 'translateY(-50%)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '8px 12px',
+              background: theme.cardBg,
+              border: `2px solid ${theme.accent}`,
+              borderRadius: '20px',
+              color: theme.accent,
+              fontSize: '14px',
+              fontWeight: 'bold',
+              boxShadow: `0 0 20px ${theme.accentGlow}`,
+              animation: 'pulse 1s ease-in-out infinite'
+            }}>
+              <span style={{ fontSize: '18px' }}>⚡</span>
+              <span>2x</span>
             </div>
           )}
 
