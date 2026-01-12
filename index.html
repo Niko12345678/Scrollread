@@ -574,17 +574,83 @@
     }
 
     // ============ WEB ARTICLE PARSER ============
+
+    // Helper function to fetch with timeout
+    async function fetchWithTimeout(url, timeout = 15000) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+      try {
+        const response = await fetch(url, { signal: controller.signal });
+        clearTimeout(timeoutId);
+        return response;
+      } catch (error) {
+        clearTimeout(timeoutId);
+        if (error.name === 'AbortError') {
+          throw new Error('Request timeout - server took too long to respond');
+        }
+        throw error;
+      }
+    }
+
+    // Helper function to fetch with retry and multiple proxies
+    async function fetchArticleWithRetry(url, maxRetries = 3) {
+      // Multiple CORS proxies as fallback
+      const proxies = [
+        `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+        `https://corsproxy.io/?${encodeURIComponent(url)}`,
+        `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`
+      ];
+
+      let lastError = null;
+
+      // Try each proxy
+      for (let proxyIndex = 0; proxyIndex < proxies.length; proxyIndex++) {
+        const proxyUrl = proxies[proxyIndex];
+
+        // Retry each proxy up to maxRetries times
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+          try {
+            console.log(`Attempt ${attempt}/${maxRetries} using proxy ${proxyIndex + 1}/${proxies.length}`);
+
+            const response = await fetchWithTimeout(proxyUrl, 15000);
+
+            if (!response.ok) {
+              throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            const html = await response.text();
+
+            // Validate we got actual HTML content
+            if (!html || html.length < 100) {
+              throw new Error('Empty or invalid response');
+            }
+
+            console.log(`Success: Loaded article (${html.length} chars) using proxy ${proxyIndex + 1}`);
+            return html;
+
+          } catch (error) {
+            lastError = error;
+            console.warn(`Attempt ${attempt} failed with proxy ${proxyIndex + 1}:`, error.message);
+
+            // If not the last attempt, wait before retrying (exponential backoff)
+            if (attempt < maxRetries || proxyIndex < proxies.length - 1) {
+              const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000);
+              console.log(`Waiting ${delay}ms before retry...`);
+              await new Promise(resolve => setTimeout(resolve, delay));
+            }
+          }
+        }
+      }
+
+      // All attempts failed
+      throw new Error(`Network error: Could not load article after ${maxRetries * proxies.length} attempts. ${lastError?.message || 'Unknown error'}`);
+    }
+
     async function parseWebArticle(url) {
       try {
-        // Use CORS proxy to fetch the HTML
-        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-        const response = await fetch(proxyUrl);
-
-        if (!response.ok) {
-          throw new Error('Failed to fetch article');
-        }
-
-        const html = await response.text();
+        // Fetch HTML with retry logic and multiple proxies
+        const html = await fetchArticleWithRetry(url);
         const parser = new DOMParser();
         const doc = parser.parseFromString(html, 'text/html');
 
@@ -655,6 +721,17 @@
 
       } catch (error) {
         console.error('Article parsing error:', error);
+
+        // Distinguish between network errors and parsing errors
+        if (error.message.includes('Network error') ||
+            error.message.includes('timeout') ||
+            error.message.includes('fetch')) {
+          throw new Error(`Errore di rete: ${error.message}`);
+        } else if (error.message.includes('too short') ||
+                   error.message.includes('extract content')) {
+          throw new Error(`Impossibile estrarre il contenuto dell'articolo. Il sito potrebbe richiedere JavaScript o avere protezioni anti-scraping.`);
+        }
+
         throw error;
       }
     }
@@ -1033,7 +1110,7 @@
           let title = articleUrl;
           try {
             const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(articleUrl)}`;
-            const response = await fetch(proxyUrl);
+            const response = await fetchWithTimeout(proxyUrl, 10000); // 10 second timeout
             if (response.ok) {
               const html = await response.text();
               const parser = new DOMParser();
@@ -1045,7 +1122,8 @@
               title = title.split(/[|–—]/)[0].trim();
             }
           } catch (e) {
-            // Fallback to URL if fetch fails
+            // Fallback to URL if fetch fails (not critical)
+            console.log('Could not fetch title, using URL:', e.message);
             title = articleUrl;
           }
 
@@ -2103,6 +2181,8 @@
       const utteranceRef = useRef(null);
       const elevenLabsIntervalRef = useRef(null);
       const audioUrlRef = useRef(null);
+      const currentTextRef = useRef(null);
+      const currentPageTokensRef = useRef(null);
       
       // Refs to track current state (avoid stale closures)
       const currentPageRef = useRef(currentPage);
@@ -2236,6 +2316,10 @@
         setIsSpeaking(true);
         setCurrentWordIndex(0);
 
+        // Store current text and tokens for speed boost changes
+        currentTextRef.current = text;
+        currentPageTokensRef.current = pageTokens;
+
         if (settings.ttsEngine === 'elevenlabs' && settings.elevenLabsKey) {
           speakWithElevenLabs(
             text,
@@ -2262,7 +2346,9 @@
 
       const speakWithBrowserTTS = useCallback((text, pageTokens) => {
         const utterance = new SpeechSynthesisUtterance(text);
-        utterance.rate = speechRate;
+        // Apply speed boost if active
+        const effectiveRate = speechRate * (isSpeedBoosted ? 2 : 1);
+        utterance.rate = effectiveRate;
         utterance.pitch = 1;
 
         const voices = speechSynthesis.getVoices();
@@ -2304,7 +2390,7 @@
 
         utteranceRef.current = utterance;
         speechSynthesis.speak(utterance);
-      }, [speechRate, settings.browserVoice, advanceToNextPage]);
+      }, [speechRate, settings.browserVoice, advanceToNextPage, isSpeedBoosted]);
 
       const goToPage = useCallback((index) => {
         const allPages = pagesRef.current;
@@ -2369,20 +2455,21 @@
 
       // Effect to handle speed boost changes
       useEffect(() => {
-        if (!isSpeaking || !isSpeedBoosted) return;
+        if (!isSpeaking) return;
 
         // Handle ElevenLabs Audio playback rate
         if (audioRef.current) {
-          audioRef.current.playbackRate = 2.0;
+          audioRef.current.playbackRate = isSpeedBoosted ? 2.0 : 1.0;
         }
-      }, [isSpeedBoosted, isSpeaking]);
 
-      // Effect to reset playback rate when speed boost is disabled
-      useEffect(() => {
-        if (!isSpeedBoosted && audioRef.current) {
-          audioRef.current.playbackRate = 1.0;
+        // Handle Browser TTS: restart with new rate
+        if (utteranceRef.current && currentTextRef.current && currentPageTokensRef.current) {
+          // Cancel current utterance
+          speechSynthesis.cancel();
+          // Restart with new rate
+          speakWithBrowserTTS(currentTextRef.current, currentPageTokensRef.current);
         }
-      }, [isSpeedBoosted]);
+      }, [isSpeedBoosted, isSpeaking, speakWithBrowserTTS]);
 
       const handleTouchStart = (e) => {
         setTouchStart(e.touches[0].clientY);
