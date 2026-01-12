@@ -94,7 +94,7 @@
     const { useState, useEffect, useRef, useCallback } = React;
 
     // ============ VERSION ============
-    const APP_VERSION = '1.5.0';
+    const APP_VERSION = '1.6.0';
     const BUILD_DATE = '2026-01-12';
 
     // ============ EPUB PARSER (using JSZip directly) ============
@@ -774,6 +774,100 @@
       await syncQueueWithGist(settings, newQueue);
 
       return newQueue;
+    }
+
+    // ============ READING PROGRESS SYNC WITH GITHUB GIST ============
+
+    // Get progress from localStorage
+    function getProgressFromLocal(bookTitle) {
+      const savedPos = localStorage.getItem(`scrollread_pos_${bookTitle}`);
+      return savedPos ? parseInt(savedPos, 10) : 0;
+    }
+
+    // Save progress to localStorage
+    function saveProgressToLocal(bookTitle, page) {
+      localStorage.setItem(`scrollread_pos_${bookTitle}`, page.toString());
+    }
+
+    // Sync reading progress with GitHub Gist
+    async function syncProgressWithGist(settings, bookTitle, localPage = null) {
+      const { githubPat, githubGistId } = settings;
+
+      if (!githubPat || !githubGistId) {
+        // No GitHub config, use local only
+        if (localPage !== null) {
+          saveProgressToLocal(bookTitle, localPage);
+        }
+        return localPage !== null ? localPage : getProgressFromLocal(bookTitle);
+      }
+
+      try {
+        // Fetch current Gist content
+        const response = await fetch(`https://api.github.com/gists/${githubGistId}`, {
+          headers: {
+            'Authorization': `token ${githubPat}`,
+            'Accept': 'application/vnd.github.v3+json'
+          }
+        });
+
+        if (!response.ok) {
+          console.warn('Failed to fetch Gist for progress, using local');
+          if (localPage !== null) {
+            saveProgressToLocal(bookTitle, localPage);
+            return localPage;
+          }
+          return getProgressFromLocal(bookTitle);
+        }
+
+        const gist = await response.json();
+        const gistContent = gist.files['progress.json']?.content;
+        const remoteProgress = gistContent ? JSON.parse(gistContent) : {};
+
+        // If we have local changes, push them
+        if (localPage !== null) {
+          remoteProgress[bookTitle] = localPage;
+
+          // Push updated progress back to Gist
+          await fetch(`https://api.github.com/gists/${githubGistId}`, {
+            method: 'PATCH',
+            headers: {
+              'Authorization': `token ${githubPat}`,
+              'Accept': 'application/vnd.github.v3+json',
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              files: {
+                'progress.json': {
+                  content: JSON.stringify(remoteProgress, null, 2)
+                }
+              }
+            })
+          });
+
+          saveProgressToLocal(bookTitle, localPage);
+          return localPage;
+        } else {
+          // Just pull from remote
+          const remotePage = remoteProgress[bookTitle] || 0;
+
+          // Merge: use the furthest progress (local vs remote)
+          const localPage = getProgressFromLocal(bookTitle);
+          const finalPage = Math.max(localPage, remotePage);
+
+          if (finalPage > localPage) {
+            saveProgressToLocal(bookTitle, finalPage);
+          }
+
+          return finalPage;
+        }
+      } catch (error) {
+        console.error('Gist progress sync error:', error);
+        if (localPage !== null) {
+          saveProgressToLocal(bookTitle, localPage);
+          return localPage;
+        }
+        return getProgressFromLocal(bookTitle);
+      }
     }
 
     // ============ LIBRARY SCREEN ============
@@ -1811,11 +1905,14 @@
               }}>
                 <strong style={{ display: 'block', marginBottom: '6px', color: theme.text }}>Come configurare:</strong>
                 1. Vai su <strong>gist.github.com</strong><br/>
-                2. Crea una Gist privata con file <code style={{ background: theme.inputBg, padding: '2px 4px', borderRadius: '3px' }}>queue.json</code> contenente <code style={{ background: theme.inputBg, padding: '2px 4px', borderRadius: '3px' }}>[]</code><br/>
+                2. Crea una Gist privata con due file:<br/>
+                   - <code style={{ background: theme.inputBg, padding: '2px 4px', borderRadius: '3px' }}>queue.json</code> contenente <code style={{ background: theme.inputBg, padding: '2px 4px', borderRadius: '3px' }}>[]</code><br/>
+                   - <code style={{ background: theme.inputBg, padding: '2px 4px', borderRadius: '3px' }}>progress.json</code> contenente <code style={{ background: theme.inputBg, padding: '2px 4px', borderRadius: '3px' }}>{}</code><br/>
                 3. Copia l'ID dalla URL (dopo /gist.github.com/username/)<br/>
                 4. Vai su <strong>github.com/settings/tokens</strong><br/>
                 5. Genera un token con scope <strong>gist</strong><br/>
-                6. Incolla qui sopra ID e token
+                6. Incolla qui sopra ID e token<br/>
+                <strong style={{ display: 'block', marginTop: '8px', color: theme.accent }}>Sincronizza coda e progresso di lettura tra dispositivi!</strong>
               </div>
             </div>
 
@@ -1880,15 +1977,29 @@
         const chunks = chunkText(book.fullText);
         setPages(chunks);
         pagesRef.current = chunks;
-        
-        // Restore position
-        const savedPos = localStorage.getItem(`scrollread_pos_${book.title}`);
-        if (savedPos) {
-          const pos = parseInt(savedPos, 10);
-          setCurrentPage(pos);
-          currentPageRef.current = pos;
-        }
-      }, [book]);
+
+        // Restore position from Gist (with local fallback)
+        const loadProgress = async () => {
+          try {
+            const pos = await syncProgressWithGist(settings, book.title);
+            if (pos > 0) {
+              setCurrentPage(pos);
+              currentPageRef.current = pos;
+            }
+          } catch (error) {
+            console.error('Failed to load progress:', error);
+            // Fallback to local only
+            const savedPos = localStorage.getItem(`scrollread_pos_${book.title}`);
+            if (savedPos) {
+              const pos = parseInt(savedPos, 10);
+              setCurrentPage(pos);
+              currentPageRef.current = pos;
+            }
+          }
+        };
+
+        loadProgress();
+      }, [book, settings.githubPat, settings.githubGistId]);
 
       useEffect(() => {
         if (pages[currentPage]) {
@@ -1896,11 +2007,21 @@
           setTokens(newTokens);
           tokensRef.current = newTokens;
           setCurrentWordIndex(-1);
-          
-          // Save position
-          localStorage.setItem(`scrollread_pos_${book.title}`, currentPage.toString());
+
+          // Save position to Gist (with local fallback)
+          const saveProgress = async () => {
+            try {
+              await syncProgressWithGist(settings, book.title, currentPage);
+            } catch (error) {
+              console.error('Failed to sync progress:', error);
+              // Fallback to local only
+              localStorage.setItem(`scrollread_pos_${book.title}`, currentPage.toString());
+            }
+          };
+
+          saveProgress();
         }
-      }, [currentPage, pages, book.title]);
+      }, [currentPage, pages, book.title, settings.githubPat, settings.githubGistId]);
 
       useEffect(() => {
         if (showUI && isReading) {
