@@ -1,0 +1,38 @@
+{
+  "manifest_version": 2,
+  "name": "ScrollRead Gist Saver",
+  "version": "1.0.0",
+  "description": "Salva articoli web su GitHub Gist per leggerli su ScrollRead",
+
+  "permissions": [
+    "activeTab",
+    "contextMenus",
+    "storage",
+    "https://api.github.com/*"
+  ],
+
+  "background": {
+    "scripts": ["background.js"]
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "browser_action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "48": "icon-48.png",
+      "96": "icon-96.png"
+    }
+  },
+
+  "icons": {
+    "48": "icon-48.png",
+    "96": "icon-96.png"
+  }
+}
