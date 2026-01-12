@@ -2466,6 +2466,8 @@
         if (utteranceRef.current && currentTextRef.current && currentPageTokensRef.current) {
           // Cancel current utterance
           speechSynthesis.cancel();
+          // Maintain isSpeaking state during transition
+          setIsSpeaking(true);
           // Restart with new rate
           speakWithBrowserTTS(currentTextRef.current, currentPageTokensRef.current);
         }
