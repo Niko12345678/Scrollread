@@ -229,7 +229,7 @@
     // ============================================================
     // VERSION & CONSTANTS
     // ============================================================
-    const APP_VERSION = '1.6.4';
+    const APP_VERSION = '1.6.5';
     const BUILD_DATE = '2026-01-12';
 
     // ============================================================
@@ -2161,7 +2161,8 @@
       const utteranceRef = useRef(null);
       const currentTextRef = useRef(null);
       const currentPageTokensRef = useRef(null);
-      
+      const currentWordIndexRef = useRef(-1);
+
       // Refs to track current state (avoid stale closures)
       const currentPageRef = useRef(currentPage);
       const pagesRef = useRef(pages);
@@ -2243,6 +2244,7 @@
 
         setIsSpeaking(false);
         setCurrentWordIndex(-1);
+        currentWordIndexRef.current = -1;
       }, []);
 
       const advanceToNextPage = useCallback(() => {
@@ -2305,6 +2307,7 @@
             );
             if (tokenIndex !== -1) {
               setCurrentWordIndex(tokenIndex);
+              currentWordIndexRef.current = tokenIndex;
             }
           }
         };
@@ -2315,6 +2318,7 @@
 
           setIsSpeaking(false);
           setCurrentWordIndex(-1);
+          currentWordIndexRef.current = -1;
           setTimeout(advanceToNextPage, 300);
         };
 
@@ -2325,6 +2329,7 @@
           console.error('Speech synthesis error:', event.error);
           setIsSpeaking(false);
           setCurrentWordIndex(-1);
+          currentWordIndexRef.current = -1;
         };
 
         utteranceRef.current = utterance;
@@ -2396,14 +2401,39 @@
       useEffect(() => {
         if (!isSpeaking) return;
 
-        // Handle Browser TTS: restart with new rate
+        // Handle Browser TTS: resume from current word with new rate
         if (utteranceRef.current && currentTextRef.current && currentPageTokensRef.current) {
           // Cancel current utterance
           speechSynthesis.cancel();
           // Maintain isSpeaking state during transition
           setIsSpeaking(true);
-          // Restart with new rate
-          speakWithBrowserTTS(currentTextRef.current, currentPageTokensRef.current);
+
+          // Resume from current word instead of restarting from beginning
+          const currentWordIdx = currentWordIndexRef.current;
+          if (currentWordIdx >= 0 && currentWordIdx < currentPageTokensRef.current.length) {
+            // Extract remaining tokens from current word onwards
+            const remainingTokens = currentPageTokensRef.current.slice(currentWordIdx);
+            // Reconstruct text from remaining tokens
+            const remainingText = remainingTokens.map(t => t.word).join('');
+            // Create new tokens with adjusted positions for the partial text
+            const adjustedTokens = remainingTokens.map((token, idx) => {
+              const startOffset = remainingTokens[0].start;
+              return {
+                word: token.word,
+                start: token.start - startOffset,
+                end: token.end - startOffset
+              };
+            });
+
+            // Resume speaking from current position
+            speakWithBrowserTTS(remainingText, adjustedTokens);
+            // Adjust current word index to account for the sliced tokens
+            setCurrentWordIndex(0);
+            currentWordIndexRef.current = 0;
+          } else {
+            // Fallback: restart from beginning if no valid word index
+            speakWithBrowserTTS(currentTextRef.current, currentPageTokensRef.current);
+          }
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [isSpeedBoosted]);
