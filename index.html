@@ -1,0 +1,1685 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#0a0a0a">
+  <title>ScrollRead</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js');
+    }
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:ital,wght@0,400;0,600;1,400&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+    
+    html, body, #root {
+      height: 100%;
+      overflow: hidden;
+    }
+    
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #0a0a0a;
+      color: #fff;
+    }
+
+    input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      background: transparent;
+    }
+    
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 20px;
+      height: 20px;
+      background: linear-gradient(135deg, #e8c9a8, #d4a574);
+      border-radius: 50%;
+      cursor: pointer;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    }
+    
+    input[type="range"]::-webkit-slider-runnable-track {
+      height: 4px;
+      background: rgba(255,255,255,0.1);
+      border-radius: 2px;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .loading-spinner {
+      width: 24px;
+      height: 24px;
+      border: 2px solid rgba(212,165,116,0.3);
+      border-top-color: #d4a574;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useCallback } = React;
+
+    // ============ EPUB PARSER (using JSZip directly) ============
+    async function parseEpub(file) {
+      try {
+        const zip = await JSZip.loadAsync(file);
+        
+        // Check for DRM/encryption FIRST
+        const encryptionFile = zip.file('META-INF/encryption.xml');
+        if (encryptionFile) {
+          const encContent = await encryptionFile.async('text');
+          if (encContent.includes('http://www.w3.org/2001/04/xmlenc#') || 
+              encContent.includes('adobe.com/adept') ||
+              encContent.includes('EncryptedData') ||
+              encContent.includes('EncryptionMethod')) {
+            throw new Error('DRM_PROTECTED');
+          }
+        }
+        
+        // Helper to read file with proper encoding detection
+        async function readFileAsText(zipFile) {
+          const uint8 = await zipFile.async('uint8array');
+          
+          // Try to detect encoding from XML declaration or meta tag
+          const preview = new TextDecoder('utf-8', { fatal: false }).decode(uint8.slice(0, 1000));
+          let encoding = 'utf-8';
+          
+          // Check XML declaration: <?xml version="1.0" encoding="..."?>
+          const xmlMatch = preview.match(/encoding=["']([^"']+)["']/i);
+          if (xmlMatch) {
+            encoding = xmlMatch[1].toLowerCase();
+          }
+          
+          // Check HTML meta: <meta charset="..."> or <meta http-equiv="Content-Type" content="...; charset=...">
+          const metaMatch = preview.match(/charset=["']?([^"'\s;>]+)/i);
+          if (metaMatch) {
+            encoding = metaMatch[1].toLowerCase();
+          }
+          
+          // Normalize common encoding names
+          const encodingMap = {
+            'iso-8859-1': 'iso-8859-1',
+            'latin1': 'iso-8859-1',
+            'latin-1': 'iso-8859-1',
+            'windows-1252': 'windows-1252',
+            'cp1252': 'windows-1252',
+            'utf8': 'utf-8',
+            'utf-8': 'utf-8'
+          };
+          encoding = encodingMap[encoding] || 'utf-8';
+          
+          try {
+            return new TextDecoder(encoding).decode(uint8);
+          } catch (e) {
+            // Fallback to UTF-8 with replacement
+            return new TextDecoder('utf-8', { fatal: false }).decode(uint8);
+          }
+        }
+        
+        // Find container.xml to get the OPF file path
+        const containerFile = zip.file('META-INF/container.xml');
+        if (!containerFile) {
+          throw new Error('Invalid ePub: missing container.xml');
+        }
+        const containerXml = await readFileAsText(containerFile);
+        
+        // Parse container to find OPF path
+        const parser = new DOMParser();
+        const containerDoc = parser.parseFromString(containerXml, 'text/xml');
+        const rootfileEl = containerDoc.querySelector('rootfile');
+        const opfPath = rootfileEl?.getAttribute('full-path');
+        
+        if (!opfPath) {
+          throw new Error('Invalid ePub: cannot find OPF path');
+        }
+        
+        // Get the base directory of the OPF file
+        const opfDir = opfPath.substring(0, opfPath.lastIndexOf('/') + 1);
+        
+        // Load and parse the OPF file
+        const opfFile = zip.file(opfPath);
+        if (!opfFile) {
+          throw new Error('Invalid ePub: cannot read OPF file');
+        }
+        const opfContent = await readFileAsText(opfFile);
+        
+        const opfDoc = parser.parseFromString(opfContent, 'text/xml');
+        
+        // Get metadata (try multiple namespace variations)
+        const titleEl = opfDoc.querySelector('title') || 
+                        opfDoc.querySelector('dc\\:title') ||
+                        opfDoc.querySelector('*|title');
+        const creatorEl = opfDoc.querySelector('creator') || 
+                          opfDoc.querySelector('dc\\:creator') ||
+                          opfDoc.querySelector('*|creator');
+        const title = titleEl?.textContent?.trim() || file.name.replace('.epub', '');
+        const author = creatorEl?.textContent?.trim() || 'Autore sconosciuto';
+        
+        // Get spine order (reading order)
+        const spineItems = opfDoc.querySelectorAll('spine itemref');
+        const manifest = opfDoc.querySelectorAll('manifest item');
+        
+        // Create a map of id -> href from manifest
+        const manifestMap = {};
+        manifest.forEach(item => {
+          const id = item.getAttribute('id');
+          const href = item.getAttribute('href');
+          const mediaType = item.getAttribute('media-type');
+          if (id && href) {
+            manifestMap[id] = { href: decodeURIComponent(href), mediaType };
+          }
+        });
+        
+        // Extract text from each spine item in order
+        let fullText = '';
+        const chapters = [];
+        
+        for (const itemref of spineItems) {
+          const idref = itemref.getAttribute('idref');
+          const manifestItem = manifestMap[idref];
+          
+          if (!manifestItem) continue;
+          
+          // Only process HTML/XHTML files
+          const mediaType = manifestItem.mediaType || '';
+          if (!mediaType.includes('html') && !mediaType.includes('xml') && !mediaType.includes('xhtml')) {
+            continue;
+          }
+          
+          // Try different path variations
+          const pathsToTry = [
+            opfDir + manifestItem.href,
+            manifestItem.href,
+            (opfDir + manifestItem.href).replace(/^\//, ''),
+            manifestItem.href.replace(/^\//, ''),
+            // Handle URL-encoded paths
+            opfDir + encodeURIComponent(manifestItem.href),
+          ];
+          
+          let content = null;
+          for (const path of pathsToTry) {
+            // Also try case-insensitive search
+            let f = zip.file(path);
+            if (!f) {
+              // Try to find file case-insensitively
+              const files = zip.file(new RegExp('^' + path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i'));
+              if (files.length > 0) f = files[0];
+            }
+            if (f) {
+              content = await readFileAsText(f);
+              break;
+            }
+          }
+          
+          if (!content) continue;
+          
+          // Check if content looks encrypted (binary garbage)
+          const nonPrintable = (content.match(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g) || []).length;
+          if (nonPrintable > content.length * 0.05) {
+            throw new Error('DRM_PROTECTED');
+          }
+          
+          // Parse HTML and extract text
+          const htmlDoc = parser.parseFromString(content, 'text/html');
+          const body = htmlDoc.body || htmlDoc.querySelector('body');
+          
+          if (body) {
+            // Remove scripts, styles, and navigation
+            body.querySelectorAll('script, style, nav, header, footer').forEach(el => el.remove());
+            
+            // Get text content, preserving some structure
+            let text = '';
+            const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT, null, false);
+            while (walker.nextNode()) {
+              const nodeText = walker.currentNode.textContent;
+              if (nodeText.trim()) {
+                text += nodeText + ' ';
+              }
+            }
+            
+            text = text.replace(/\s+/g, ' ').trim();
+            
+            if (text.length > 50) {
+              chapters.push({
+                title: `Capitolo ${chapters.length + 1}`,
+                text: text
+              });
+              fullText += text + ' ';
+            }
+          }
+        }
+        
+        if (fullText.trim().length < 100) {
+          throw new Error('Could not extract text from ePub');
+        }
+        
+        return {
+          title,
+          author,
+          chapters,
+          fullText: fullText.trim()
+        };
+        
+      } catch (error) {
+        console.error('ePub parsing error:', error);
+        throw error;
+      }
+    }
+
+    // ============ TEXT CHUNKER ============
+    function chunkText(text, targetWords = 40) {
+      const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+      const chunks = [];
+      let currentChunk = '';
+      let currentWords = 0;
+
+      sentences.forEach(sentence => {
+        const sentenceWords = sentence.trim().split(/\s+/).length;
+        
+        if (currentWords + sentenceWords > targetWords && currentChunk) {
+          chunks.push(currentChunk.trim());
+          currentChunk = sentence;
+          currentWords = sentenceWords;
+        } else {
+          currentChunk += ' ' + sentence;
+          currentWords += sentenceWords;
+        }
+      });
+
+      if (currentChunk.trim()) {
+        chunks.push(currentChunk.trim());
+      }
+
+      return chunks;
+    }
+
+    function tokenizeWithPositions(text) {
+      const tokens = [];
+      const regex = /(\S+)/g;
+      let match;
+      
+      while ((match = regex.exec(text)) !== null) {
+        tokens.push({
+          word: match[1],
+          start: match.index,
+          end: match.index + match[1].length
+        });
+      }
+      
+      return tokens;
+    }
+
+    // ============ ELEVENLABS TTS ============
+    const ELEVENLABS_VOICES = [
+      { id: 'EXAVITQu4vr4xnSDxMaL', name: 'Sarah (femminile)', lang: 'it' },
+      { id: 'TX3LPaxmHKxFdv7VOQHJ', name: 'Liam (maschile)', lang: 'it' },
+      { id: 'pFZP5JQG7iQjIQuC4Bku', name: 'Lily (femminile UK)', lang: 'en' },
+      { id: 'onwK4e9ZLuTAKqWW03F9', name: 'Daniel (maschile UK)', lang: 'en' },
+    ];
+
+    // Theme definitions
+    const THEMES = {
+      dark: {
+        name: 'Scuro',
+        bg: '#0a0a0a',
+        bgGradient: 'linear-gradient(180deg, #0a0a0a 0%, #111111 50%, #0a0a0a 100%)',
+        bgSecondary: '#1a1a1a',
+        text: '#f0ede8',
+        textMuted: 'rgba(255,255,255,0.5)',
+        textFaded: 'rgba(240, 237, 232, 0.45)',
+        textRead: 'rgba(240, 237, 232, 0.85)',
+        accent: '#d4a574',
+        accentLight: '#e8c9a8',
+        accentGlow: 'rgba(212,165,116,0.4)',
+        cardBg: 'rgba(255,255,255,0.03)',
+        cardBorder: 'rgba(255,255,255,0.08)',
+        inputBg: 'rgba(255,255,255,0.03)',
+        inputBorder: 'rgba(255,255,255,0.1)',
+        overlayBg: 'rgba(0,0,0,0.8)',
+        highlightBg: 'linear-gradient(180deg, rgba(212, 165, 116, 0.25) 0%, rgba(212, 165, 116, 0.1) 100%)',
+        highlightGlow: '0 0 20px rgba(255, 220, 180, 0.8), 0 0 40px rgba(212, 165, 116, 0.4)'
+      },
+      solarized: {
+        name: 'Solarized',
+        bg: '#fdf6e3',
+        bgGradient: 'linear-gradient(180deg, #fdf6e3 0%, #eee8d5 50%, #fdf6e3 100%)',
+        bgSecondary: '#eee8d5',
+        text: '#657b83',
+        textMuted: '#93a1a1',
+        textFaded: 'rgba(101, 123, 131, 0.5)',
+        textRead: '#586e75',
+        accent: '#b58900',
+        accentLight: '#cb4b16',
+        accentGlow: 'rgba(181,137,0,0.3)',
+        cardBg: 'rgba(238,232,213,0.5)',
+        cardBorder: 'rgba(147,161,161,0.3)',
+        inputBg: 'rgba(238,232,213,0.8)',
+        inputBorder: 'rgba(147,161,161,0.4)',
+        overlayBg: 'rgba(253,246,227,0.95)',
+        highlightBg: 'linear-gradient(180deg, rgba(181, 137, 0, 0.2) 0%, rgba(181, 137, 0, 0.1) 100%)',
+        highlightGlow: '0 0 15px rgba(181, 137, 0, 0.5), 0 0 30px rgba(203, 75, 22, 0.3)'
+      },
+      sepia: {
+        name: 'Seppia',
+        bg: '#f4ecd8',
+        bgGradient: 'linear-gradient(180deg, #f4ecd8 0%, #e8dcc8 50%, #f4ecd8 100%)',
+        bgSecondary: '#e8dcc8',
+        text: '#5b4636',
+        textMuted: '#8b7355',
+        textFaded: 'rgba(91, 70, 54, 0.5)',
+        textRead: '#6b5344',
+        accent: '#8b4513',
+        accentLight: '#a0522d',
+        accentGlow: 'rgba(139,69,19,0.3)',
+        cardBg: 'rgba(232,220,200,0.6)',
+        cardBorder: 'rgba(139,115,85,0.3)',
+        inputBg: 'rgba(232,220,200,0.8)',
+        inputBorder: 'rgba(139,115,85,0.4)',
+        overlayBg: 'rgba(244,236,216,0.95)',
+        highlightBg: 'linear-gradient(180deg, rgba(139, 69, 19, 0.2) 0%, rgba(139, 69, 19, 0.1) 100%)',
+        highlightGlow: '0 0 15px rgba(139, 69, 19, 0.5), 0 0 30px rgba(160, 82, 45, 0.3)'
+      }
+    };
+
+    async function speakWithElevenLabs(text, voiceId, apiKey, onWord, onEnd) {
+      try {
+        const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'xi-api-key': apiKey
+          },
+          body: JSON.stringify({
+            text,
+            model_id: 'eleven_multilingual_v2',
+            voice_settings: {
+              stability: 0.5,
+              similarity_boost: 0.75
+            }
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error('ElevenLabs API error');
+        }
+
+        const audioBlob = await response.blob();
+        const audioUrl = URL.createObjectURL(audioBlob);
+        const audio = new Audio(audioUrl);
+        
+        // Simulate word tracking based on audio duration
+        const words = text.split(/\s+/);
+        const avgWordDuration = (audio.duration || (words.length * 0.3)) / words.length;
+        
+        let wordIndex = 0;
+        const wordInterval = setInterval(() => {
+          if (wordIndex < words.length) {
+            onWord(wordIndex);
+            wordIndex++;
+          }
+        }, avgWordDuration * 1000);
+
+        audio.onended = () => {
+          clearInterval(wordInterval);
+          URL.revokeObjectURL(audioUrl);
+          onEnd();
+        };
+
+        audio.play();
+        return audio;
+      } catch (error) {
+        console.error('ElevenLabs error:', error);
+        throw error;
+      }
+    }
+
+    // ============ LIBRARY SCREEN ============
+    function LibraryScreen({ onBookSelect, savedBooks, onDeleteBook, settings, onOpenSettings }) {
+      const [isLoading, setIsLoading] = useState(false);
+      const [error, setError] = useState(null);
+      const fileInputRef = useRef(null);
+      
+      const theme = THEMES[settings?.theme] || THEMES.dark;
+
+      const handleFileSelect = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        setIsLoading(true);
+        setError(null);
+
+        try {
+          const bookData = await parseEpub(file);
+          onBookSelect(bookData);
+        } catch (err) {
+          console.error('ePub error:', err);
+          if (err.message === 'DRM_PROTECTED') {
+            setError('⚠️ Questo ePub è protetto da DRM (Adobe). Per usarlo con ScrollRead, rimuovi prima la protezione con Calibre + DeDRM plugin, oppure prova con un ePub senza protezione.');
+          } else {
+            setError(`Errore: ${err.message || 'File non valido'}. Prova con un altro ePub.`);
+          }
+        } finally {
+          setIsLoading(false);
+        }
+      };
+
+      return (
+        <div style={{
+          minHeight: '100vh',
+          background: theme.bgGradient,
+          padding: '60px 24px 100px',
+          paddingTop: 'max(60px, env(safe-area-inset-top))'
+        }}>
+          {/* Header */}
+          <div style={{ marginBottom: '40px', animation: 'fadeIn 0.5s ease', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <div>
+              <h1 style={{
+                fontSize: '32px',
+                fontFamily: "'Crimson Pro', serif",
+                fontWeight: 400,
+                color: theme.text,
+                marginBottom: '8px'
+              }}>
+                ScrollRead
+              </h1>
+              <p style={{
+                fontSize: '14px',
+                color: theme.textMuted,
+                letterSpacing: '0.02em'
+              }}>
+                Leggi scorrendo, ascolta leggendo
+              </p>
+            </div>
+            <button
+              onClick={onOpenSettings}
+              style={{
+                background: theme.cardBg,
+                border: `1px solid ${theme.cardBorder}`,
+                borderRadius: '50%',
+                width: '44px',
+                height: '44px',
+                color: theme.text,
+                fontSize: '20px',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}
+            >
+              ⚙️
+            </button>
+          </div>
+
+          {/* Upload button */}
+          <div 
+            onClick={() => fileInputRef.current?.click()}
+            style={{
+              background: `linear-gradient(135deg, ${theme.accent}22 0%, ${theme.accent}11 100%)`,
+              border: `2px dashed ${theme.accent}66`,
+              borderRadius: '16px',
+              padding: '40px 24px',
+              textAlign: 'center',
+              cursor: 'pointer',
+              marginBottom: '32px',
+              transition: 'all 0.2s ease',
+              animation: 'fadeIn 0.5s ease 0.1s both'
+            }}
+          >
+            {isLoading ? (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
+                <div className="loading-spinner" style={{ borderTopColor: theme.accent }} />
+                <span style={{ color: theme.accent, fontSize: '14px' }}>Caricamento in corso...</span>
+              </div>
+            ) : (
+              <>
+                <div style={{
+                  width: '64px',
+                  height: '64px',
+                  background: `linear-gradient(135deg, ${theme.accent}, ${theme.accentLight})`,
+                  borderRadius: '50%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  margin: '0 auto 16px',
+                  fontSize: '28px'
+                }}>
+                  📚
+                </div>
+                <div style={{ color: theme.text, fontSize: '16px', marginBottom: '8px', fontWeight: 500 }}>
+                  Carica un ePub
+                </div>
+                <div style={{ color: theme.textMuted, fontSize: '13px' }}>
+                  Tocca per selezionare un file dal tuo dispositivo
+                </div>
+              </>
+            )}
+          </div>
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".epub"
+            onChange={handleFileSelect}
+            style={{ display: 'none' }}
+          />
+
+          {error && (
+            <div style={{
+              background: 'rgba(220,80,80,0.1)',
+              border: '1px solid rgba(220,80,80,0.3)',
+              borderRadius: '12px',
+              padding: '16px',
+              marginBottom: '24px',
+              color: '#e88',
+              fontSize: '14px'
+            }}>
+              {error}
+            </div>
+          )}
+
+          {/* Saved books */}
+          {savedBooks.length > 0 && (
+            <div style={{ animation: 'fadeIn 0.5s ease 0.2s both' }}>
+              <h2 style={{
+                fontSize: '13px',
+                fontWeight: 600,
+                color: theme.textMuted,
+                letterSpacing: '0.1em',
+                textTransform: 'uppercase',
+                marginBottom: '16px'
+              }}>
+                Continua a leggere
+              </h2>
+              
+              {savedBooks.map((book, idx) => (
+                <div
+                  key={idx}
+                  onClick={() => onBookSelect(book)}
+                  style={{
+                    background: theme.cardBg,
+                    border: `1px solid ${theme.cardBorder}`,
+                    borderRadius: '12px',
+                    padding: '16px',
+                    marginBottom: '12px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '16px',
+                    transition: 'all 0.2s ease'
+                  }}
+                >
+                  <div style={{
+                    width: '48px',
+                    height: '64px',
+                    background: theme.bgSecondary,
+                    borderRadius: '4px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '20px',
+                    flexShrink: 0
+                  }}>
+                    📖
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{
+                      color: theme.text,
+                      fontSize: '15px',
+                      fontWeight: 500,
+                      marginBottom: '4px',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis'
+                    }}>
+                      {book.title}
+                    </div>
+                    <div style={{
+                      color: theme.textMuted,
+                      fontSize: '13px'
+                    }}>
+                      {book.author}
+                    </div>
+                    {book.currentPage !== undefined && (
+                      <div style={{
+                        marginTop: '8px',
+                        height: '3px',
+                        background: theme.inputBorder,
+                        borderRadius: '2px',
+                        overflow: 'hidden'
+                      }}>
+                        <div style={{
+                          height: '100%',
+                          width: `${(book.currentPage / book.totalPages) * 100}%`,
+                          background: theme.accent,
+                          borderRadius: '2px'
+                        }} />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Footer */}
+          <div style={{
+            position: 'fixed',
+            bottom: 0,
+            left: 0,
+            right: 0,
+            padding: '16px 24px',
+            paddingBottom: 'max(16px, env(safe-area-inset-bottom))',
+            background: `linear-gradient(0deg, ${theme.bg} 0%, transparent 100%)`,
+            textAlign: 'center'
+          }}>
+            <div style={{
+              fontSize: '11px',
+              color: theme.textMuted,
+              letterSpacing: '0.05em'
+            }}>
+              Installabile come app • Funziona offline
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ============ SETTINGS MODAL ============
+    function SettingsModal({ isOpen, onClose, settings, onSettingsChange, voices }) {
+      if (!isOpen) return null;
+      
+      const theme = THEMES[settings.theme] || THEMES.dark;
+
+      return (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          background: theme.overlayBg,
+          backdropFilter: 'blur(10px)',
+          zIndex: 100,
+          display: 'flex',
+          alignItems: 'flex-end',
+          justifyContent: 'center'
+        }} onClick={onClose}>
+          <div 
+            onClick={e => e.stopPropagation()}
+            style={{
+              background: theme.bgSecondary,
+              borderRadius: '24px 24px 0 0',
+              width: '100%',
+              maxWidth: '500px',
+              maxHeight: '80vh',
+              overflow: 'auto',
+              padding: '24px',
+              paddingBottom: 'max(24px, env(safe-area-inset-bottom))',
+              animation: 'fadeIn 0.3s ease'
+            }}
+          >
+            <div style={{
+              width: '40px',
+              height: '4px',
+              background: theme.inputBorder,
+              borderRadius: '2px',
+              margin: '0 auto 24px'
+            }} />
+
+            <h2 style={{
+              fontSize: '20px',
+              fontWeight: 600,
+              color: theme.text,
+              marginBottom: '24px'
+            }}>
+              Impostazioni
+            </h2>
+
+            {/* Theme selector */}
+            <div style={{ marginBottom: '24px' }}>
+              <label style={{
+                fontSize: '12px',
+                fontWeight: 600,
+                color: theme.textMuted,
+                letterSpacing: '0.05em',
+                textTransform: 'uppercase',
+                display: 'block',
+                marginBottom: '12px'
+              }}>
+                Tema
+              </label>
+              
+              <div style={{ display: 'flex', gap: '8px' }}>
+                {Object.entries(THEMES).map(([key, t]) => (
+                  <button
+                    key={key}
+                    onClick={() => onSettingsChange({ ...settings, theme: key })}
+                    style={{
+                      flex: 1,
+                      padding: '12px 8px',
+                      borderRadius: '8px',
+                      border: settings.theme === key 
+                        ? `2px solid ${theme.accent}` 
+                        : `1px solid ${theme.inputBorder}`,
+                      background: t.bg,
+                      color: t.text,
+                      fontSize: '12px',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      gap: '6px'
+                    }}
+                  >
+                    <div style={{
+                      width: '24px',
+                      height: '24px',
+                      borderRadius: '50%',
+                      background: t.bgGradient,
+                      border: `2px solid ${t.accent}`
+                    }} />
+                    {t.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* TTS Engine */}
+            <div style={{ marginBottom: '24px' }}>
+              <label style={{
+                fontSize: '12px',
+                fontWeight: 600,
+                color: theme.textMuted,
+                letterSpacing: '0.05em',
+                textTransform: 'uppercase',
+                display: 'block',
+                marginBottom: '12px'
+              }}>
+                Motore vocale
+              </label>
+              
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  onClick={() => onSettingsChange({ ...settings, ttsEngine: 'browser' })}
+                  style={{
+                    flex: 1,
+                    padding: '12px',
+                    borderRadius: '8px',
+                    border: settings.ttsEngine === 'browser' 
+                      ? `2px solid ${theme.accent}` 
+                      : `1px solid ${theme.inputBorder}`,
+                    background: settings.ttsEngine === 'browser'
+                      ? theme.cardBg
+                      : theme.inputBg,
+                    color: theme.text,
+                    fontSize: '13px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Browser
+                  <div style={{ fontSize: '10px', color: theme.textMuted, marginTop: '4px' }}>
+                    Gratuito
+                  </div>
+                </button>
+                <button
+                  onClick={() => onSettingsChange({ ...settings, ttsEngine: 'elevenlabs' })}
+                  style={{
+                    flex: 1,
+                    padding: '12px',
+                    borderRadius: '8px',
+                    border: settings.ttsEngine === 'elevenlabs' 
+                      ? `2px solid ${theme.accent}` 
+                      : `1px solid ${theme.inputBorder}`,
+                    background: settings.ttsEngine === 'elevenlabs'
+                      ? theme.cardBg
+                      : theme.inputBg,
+                    color: theme.text,
+                    fontSize: '13px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  ElevenLabs
+                  <div style={{ fontSize: '10px', color: theme.textMuted, marginTop: '4px' }}>
+                    Voci premium
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            {/* ElevenLabs API Key */}
+            {settings.ttsEngine === 'elevenlabs' && (
+              <div style={{ marginBottom: '24px' }}>
+                <label style={{
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  color: theme.textMuted,
+                  letterSpacing: '0.05em',
+                  textTransform: 'uppercase',
+                  display: 'block',
+                  marginBottom: '12px'
+                }}>
+                  API Key ElevenLabs
+                </label>
+                <input
+                  type="password"
+                  value={settings.elevenLabsKey || ''}
+                  onChange={e => onSettingsChange({ ...settings, elevenLabsKey: e.target.value })}
+                  placeholder="sk_..."
+                  style={{
+                    width: '100%',
+                    padding: '12px 16px',
+                    borderRadius: '8px',
+                    border: `1px solid ${theme.inputBorder}`,
+                    background: theme.inputBg,
+                    color: theme.text,
+                    fontSize: '14px',
+                    outline: 'none'
+                  }}
+                />
+                <div style={{ fontSize: '11px', color: theme.textMuted, marginTop: '8px' }}>
+                  Ottieni la tua API key su elevenlabs.io (10k caratteri gratis/mese)
+                </div>
+              </div>
+            )}
+
+            {/* Voice selection */}
+            <div style={{ marginBottom: '24px' }}>
+              <label style={{
+                fontSize: '12px',
+                fontWeight: 600,
+                color: theme.textMuted,
+                letterSpacing: '0.05em',
+                textTransform: 'uppercase',
+                display: 'block',
+                marginBottom: '12px'
+              }}>
+                Voce
+              </label>
+              
+              {settings.ttsEngine === 'elevenlabs' ? (
+                <select
+                  value={settings.elevenLabsVoice || ELEVENLABS_VOICES[0].id}
+                  onChange={e => onSettingsChange({ ...settings, elevenLabsVoice: e.target.value })}
+                  style={{
+                    width: '100%',
+                    padding: '12px 16px',
+                    borderRadius: '8px',
+                    border: `1px solid ${theme.inputBorder}`,
+                    background: theme.inputBg,
+                    color: theme.text,
+                    fontSize: '14px',
+                    outline: 'none'
+                  }}
+                >
+                  {ELEVENLABS_VOICES.map(v => (
+                    <option key={v.id} value={v.id} style={{ background: theme.bgSecondary }}>
+                      {v.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <select
+                  value={settings.browserVoice || ''}
+                  onChange={e => onSettingsChange({ ...settings, browserVoice: e.target.value })}
+                  style={{
+                    width: '100%',
+                    padding: '12px 16px',
+                    borderRadius: '8px',
+                    border: `1px solid ${theme.inputBorder}`,
+                    background: theme.inputBg,
+                    color: theme.text,
+                    fontSize: '14px',
+                    outline: 'none'
+                  }}
+                >
+                  {voices.map(v => (
+                    <option key={v.name} value={v.name} style={{ background: theme.bgSecondary }}>
+                      {v.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+
+            {/* Speed as WPM */}
+            <div style={{ marginBottom: '24px' }}>
+              <label style={{
+                fontSize: '12px',
+                fontWeight: 600,
+                color: theme.textMuted,
+                letterSpacing: '0.05em',
+                textTransform: 'uppercase',
+                display: 'block',
+                marginBottom: '12px'
+              }}>
+                Velocità: {settings.wpm || 150} parole/minuto
+              </label>
+              
+              {/* WPM Preset buttons */}
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
+                {[100, 150, 200, 250].map(wpmValue => (
+                  <button
+                    key={wpmValue}
+                    onClick={() => onSettingsChange({ ...settings, wpm: wpmValue })}
+                    style={{
+                      flex: 1,
+                      padding: '10px 8px',
+                      borderRadius: '8px',
+                      border: (settings.wpm || 150) === wpmValue 
+                        ? `2px solid ${theme.accent}` 
+                        : `1px solid ${theme.inputBorder}`,
+                      background: (settings.wpm || 150) === wpmValue
+                        ? theme.cardBg
+                        : theme.inputBg,
+                      color: theme.text,
+                      fontSize: '13px',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    {wpmValue}
+                  </button>
+                ))}
+              </div>
+              
+              {/* Fine tune slider */}
+              <input
+                type="range"
+                min="75"
+                max="300"
+                step="5"
+                value={settings.wpm || 150}
+                onChange={e => onSettingsChange({ ...settings, wpm: parseInt(e.target.value) })}
+                style={{
+                  width: '100%',
+                  height: '32px',
+                  cursor: 'pointer'
+                }}
+              />
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: theme.textMuted, marginTop: '4px' }}>
+                <span>🐢 Lento</span>
+                <span>Veloce 🐇</span>
+              </div>
+            </div>
+
+            <button
+              onClick={onClose}
+              style={{
+                width: '100%',
+                padding: '16px',
+                borderRadius: '12px',
+                border: 'none',
+                background: `linear-gradient(135deg, ${theme.accent}, ${theme.accentLight})`,
+                color: theme.bg,
+                fontSize: '16px',
+                fontWeight: 600,
+                cursor: 'pointer'
+              }}
+            >
+              Fatto
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ============ READER SCREEN ============
+    function ReaderScreen({ book, onBack, settings, onOpenSettings }) {
+      const [pages, setPages] = useState([]);
+      const [currentPage, setCurrentPage] = useState(0);
+      const [isReading, setIsReading] = useState(false);
+      const [isSpeaking, setIsSpeaking] = useState(false);
+      const [currentWordIndex, setCurrentWordIndex] = useState(-1);
+      const [showUI, setShowUI] = useState(true);
+      const [tokens, setTokens] = useState([]);
+      const [isTransitioning, setIsTransitioning] = useState(false);
+      const [touchStart, setTouchStart] = useState(null);
+      
+      const hideUITimeout = useRef(null);
+      const audioRef = useRef(null);
+      const utteranceRef = useRef(null);
+      
+      // Refs to track current state (avoid stale closures)
+      const currentPageRef = useRef(currentPage);
+      const pagesRef = useRef(pages);
+      const isReadingRef = useRef(isReading);
+      const tokensRef = useRef(tokens);
+      
+      // Keep refs in sync
+      useEffect(() => { currentPageRef.current = currentPage; }, [currentPage]);
+      useEffect(() => { pagesRef.current = pages; }, [pages]);
+      useEffect(() => { isReadingRef.current = isReading; }, [isReading]);
+      useEffect(() => { tokensRef.current = tokens; }, [tokens]);
+      
+      const theme = THEMES[settings.theme] || THEMES.dark;
+      
+      // Convert WPM to speech rate (150 WPM ≈ 1.0 rate)
+      const wpm = settings.wpm || 150;
+      const speechRate = wpm / 150;
+
+      useEffect(() => {
+        const chunks = chunkText(book.fullText);
+        setPages(chunks);
+        pagesRef.current = chunks;
+        
+        // Restore position
+        const savedPos = localStorage.getItem(`scrollread_pos_${book.title}`);
+        if (savedPos) {
+          const pos = parseInt(savedPos, 10);
+          setCurrentPage(pos);
+          currentPageRef.current = pos;
+        }
+      }, [book]);
+
+      useEffect(() => {
+        if (pages[currentPage]) {
+          const newTokens = tokenizeWithPositions(pages[currentPage]);
+          setTokens(newTokens);
+          tokensRef.current = newTokens;
+          setCurrentWordIndex(-1);
+          
+          // Save position
+          localStorage.setItem(`scrollread_pos_${book.title}`, currentPage.toString());
+        }
+      }, [currentPage, pages, book.title]);
+
+      useEffect(() => {
+        if (showUI && isReading) {
+          hideUITimeout.current = setTimeout(() => setShowUI(false), 3000);
+        }
+        return () => clearTimeout(hideUITimeout.current);
+      }, [showUI, isReading]);
+
+      const stopSpeaking = useCallback(() => {
+        if (audioRef.current) {
+          audioRef.current.pause();
+          audioRef.current = null;
+        }
+        speechSynthesis.cancel();
+        setIsSpeaking(false);
+        setCurrentWordIndex(-1);
+      }, []);
+
+      const advanceToNextPage = useCallback(() => {
+        const current = currentPageRef.current;
+        const allPages = pagesRef.current;
+        const reading = isReadingRef.current;
+        
+        if (reading && current < allPages.length - 1) {
+          const nextPage = current + 1;
+          setCurrentPage(nextPage);
+          currentPageRef.current = nextPage;
+          
+          // Small delay then speak next page
+          setTimeout(() => {
+            const newTokens = tokenizeWithPositions(allPages[nextPage]);
+            setTokens(newTokens);
+            tokensRef.current = newTokens;
+            speakText(allPages[nextPage], newTokens);
+          }, 400);
+        } else {
+          setIsReading(false);
+          isReadingRef.current = false;
+        }
+      }, []);
+
+      const speakText = useCallback((text, pageTokens) => {
+        stopSpeaking();
+        setIsSpeaking(true);
+        setCurrentWordIndex(0);
+
+        if (settings.ttsEngine === 'elevenlabs' && settings.elevenLabsKey) {
+          speakWithElevenLabs(
+            text,
+            settings.elevenLabsVoice || ELEVENLABS_VOICES[0].id,
+            settings.elevenLabsKey,
+            (wordIdx) => setCurrentWordIndex(wordIdx),
+            () => {
+              setIsSpeaking(false);
+              setCurrentWordIndex(-1);
+              setTimeout(advanceToNextPage, 300);
+            }
+          ).then(audio => {
+            audioRef.current = audio;
+          }).catch(() => {
+            speakWithBrowserTTS(text, pageTokens);
+          });
+        } else {
+          speakWithBrowserTTS(text, pageTokens);
+        }
+      }, [settings, stopSpeaking, advanceToNextPage]);
+
+      const speakWithBrowserTTS = useCallback((text, pageTokens) => {
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate = speechRate;
+        utterance.pitch = 1;
+        
+        const voices = speechSynthesis.getVoices();
+        const selectedVoice = voices.find(v => v.name === settings.browserVoice);
+        if (selectedVoice) utterance.voice = selectedVoice;
+        
+        utterance.onboundary = (event) => {
+          if (event.name === 'word') {
+            const charIndex = event.charIndex;
+            const tokenIndex = pageTokens.findIndex(t => 
+              charIndex >= t.start && charIndex < t.end
+            );
+            if (tokenIndex !== -1) {
+              setCurrentWordIndex(tokenIndex);
+            }
+          }
+        };
+        
+        utterance.onend = () => {
+          setIsSpeaking(false);
+          setCurrentWordIndex(-1);
+          setTimeout(advanceToNextPage, 300);
+        };
+        
+        utteranceRef.current = utterance;
+        speechSynthesis.speak(utterance);
+      }, [speechRate, settings.browserVoice, advanceToNextPage]);
+
+      const goToPage = useCallback((index) => {
+        const allPages = pagesRef.current;
+        if (index < 0 || index >= allPages.length || isTransitioning) return;
+        
+        setIsTransitioning(true);
+        stopSpeaking();
+        
+        setCurrentPage(index);
+        currentPageRef.current = index;
+        
+        setTimeout(() => {
+          setIsTransitioning(false);
+          const newTokens = tokenizeWithPositions(allPages[index]);
+          setTokens(newTokens);
+          tokensRef.current = newTokens;
+          
+          if (isReadingRef.current) {
+            speakText(allPages[index], newTokens);
+          }
+        }, 300);
+      }, [isTransitioning, stopSpeaking, speakText]);
+
+      const toggleReading = useCallback(() => {
+        if (isReadingRef.current) {
+          setIsReading(false);
+          isReadingRef.current = false;
+          stopSpeaking();
+        } else {
+          setIsReading(true);
+          isReadingRef.current = true;
+          speakText(pagesRef.current[currentPageRef.current], tokensRef.current);
+        }
+      }, [stopSpeaking, speakText]);
+
+      const handleTouchStart = (e) => {
+        setTouchStart(e.touches[0].clientY);
+        setShowUI(true);
+      };
+
+      const handleTouchEnd = (e) => {
+        if (!touchStart) return;
+        const touchEnd = e.changedTouches[0].clientY;
+        const diff = touchStart - touchEnd;
+
+        if (Math.abs(diff) > 50) {
+          if (diff > 0) goToPage(currentPageRef.current + 1);
+          else goToPage(currentPageRef.current - 1);
+        }
+        setTouchStart(null);
+      };
+
+      useEffect(() => {
+        const handleKeyDown = (e) => {
+          setShowUI(true);
+          if (e.key === 'ArrowDown' || e.key === ' ') {
+            e.preventDefault();
+            goToPage(currentPageRef.current + 1);
+          } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            goToPage(currentPageRef.current - 1);
+          } else if (e.key === 'Enter') {
+            toggleReading();
+          } else if (e.key === 'Escape') {
+            onBack();
+          }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+      }, [currentPage, goToPage, toggleReading]);
+
+      const handleWheel = (e) => {
+        e.preventDefault();
+        setShowUI(true);
+        if (e.deltaY > 30) goToPage(currentPage + 1);
+        else if (e.deltaY < -30) goToPage(currentPage - 1);
+      };
+
+      const progress = pages.length > 0 ? ((currentPage + 1) / pages.length) * 100 : 0;
+
+      const renderKaraokeText = () => {
+        if (tokens.length === 0) return pages[currentPage];
+        
+        return tokens.map((token, idx) => {
+          const isCurrentWord = idx === currentWordIndex;
+          const isPastWord = idx < currentWordIndex;
+          const space = idx > 0 ? ' ' : '';
+          
+          return (
+            <React.Fragment key={idx}>
+              {space}
+              <span style={{
+                color: isCurrentWord 
+                  ? theme.text 
+                  : isPastWord 
+                    ? theme.textRead 
+                    : theme.textFaded,
+                textShadow: isCurrentWord 
+                  ? theme.highlightGlow 
+                  : 'none',
+                transition: 'all 0.15s ease-out',
+                ...(isCurrentWord && {
+                  background: theme.highlightBg,
+                  borderRadius: '4px',
+                  padding: '2px 4px',
+                  margin: '-2px -4px',
+                })
+              }}>
+                {token.word}
+              </span>
+            </React.Fragment>
+          );
+        });
+      };
+
+      return (
+        <div 
+          onTouchStart={handleTouchStart}
+          onTouchEnd={handleTouchEnd}
+          onWheel={handleWheel}
+          onClick={() => setShowUI(true)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: theme.bgGradient,
+            fontFamily: "'Crimson Pro', serif",
+            overflow: 'hidden',
+            userSelect: 'none'
+          }}
+        >
+          {/* Progress bar */}
+          <div style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            height: '3px',
+            background: theme.inputBorder,
+            zIndex: 20
+          }}>
+            <div style={{
+              height: '100%',
+              width: `${progress}%`,
+              background: `linear-gradient(90deg, ${theme.accent}, ${theme.accentLight})`,
+              transition: 'width 0.3s ease',
+              boxShadow: `0 0 10px ${theme.accentGlow}`
+            }} />
+          </div>
+
+          {/* Header */}
+          <div style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            padding: '20px 24px',
+            paddingTop: 'max(20px, env(safe-area-inset-top))',
+            background: `linear-gradient(180deg, ${theme.bg}ee 0%, transparent 100%)`,
+            opacity: showUI ? 1 : 0,
+            transition: 'opacity 0.3s ease',
+            zIndex: 10,
+            display: 'flex',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between'
+          }}>
+            <button
+              onClick={(e) => { e.stopPropagation(); stopSpeaking(); onBack(); }}
+              style={{
+                background: theme.cardBg,
+                border: `1px solid ${theme.cardBorder}`,
+                borderRadius: '50%',
+                width: '40px',
+                height: '40px',
+                color: theme.text,
+                fontSize: '18px',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}
+            >
+              ←
+            </button>
+            
+            <div style={{ textAlign: 'center', flex: 1, padding: '0 16px' }}>
+              <div style={{
+                fontSize: '12px',
+                fontWeight: 600,
+                letterSpacing: '0.1em',
+                textTransform: 'uppercase',
+                color: theme.accent,
+                marginBottom: '4px'
+              }}>
+                {book.author}
+              </div>
+              <div style={{
+                fontSize: '16px',
+                color: theme.text,
+                fontStyle: 'italic',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis'
+              }}>
+                {book.title}
+              </div>
+            </div>
+
+            <button
+              onClick={(e) => { e.stopPropagation(); onOpenSettings(); }}
+              style={{
+                background: theme.cardBg,
+                border: `1px solid ${theme.cardBorder}`,
+                borderRadius: '50%',
+                width: '40px',
+                height: '40px',
+                color: theme.text,
+                fontSize: '18px',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}
+            >
+              ⚙️
+            </button>
+          </div>
+
+          {/* Main content */}
+          <div style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '100px 32px'
+          }}>
+            <div style={{
+              maxWidth: '420px',
+              width: '100%',
+              transform: isTransitioning ? 'translateY(20px)' : 'translateY(0)',
+              opacity: isTransitioning ? 0 : 1,
+              transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)'
+            }}>
+              <p style={{
+                fontSize: '21px',
+                lineHeight: 1.85,
+                color: theme.text,
+                margin: 0,
+                textAlign: 'justify'
+              }}>
+                {isSpeaking || currentWordIndex >= 0 ? renderKaraokeText() : pages[currentPage]}
+              </p>
+            </div>
+          </div>
+
+          {/* Word progress */}
+          {isSpeaking && tokens.length > 0 && (
+            <div style={{
+              position: 'absolute',
+              left: '16px',
+              top: '50%',
+              transform: 'translateY(-50%)',
+              width: '3px',
+              height: '100px',
+              background: theme.inputBorder,
+              borderRadius: '2px',
+              overflow: 'hidden'
+            }}>
+              <div style={{
+                width: '100%',
+                height: `${((currentWordIndex + 1) / tokens.length) * 100}%`,
+                background: `linear-gradient(180deg, ${theme.accent}, ${theme.accentLight})`,
+                borderRadius: '2px',
+                transition: 'height 0.15s ease-out'
+              }} />
+            </div>
+          )}
+
+          {/* Bottom controls */}
+          <div style={{
+            position: 'absolute',
+            bottom: 0,
+            left: 0,
+            right: 0,
+            padding: '24px',
+            paddingBottom: 'max(24px, env(safe-area-inset-bottom))',
+            background: `linear-gradient(0deg, ${theme.bg}ee 0%, transparent 100%)`,
+            opacity: showUI ? 1 : 0,
+            transition: 'opacity 0.3s ease',
+            zIndex: 10
+          }}>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '24px',
+              marginBottom: '16px'
+            }}>
+              <button
+                onClick={(e) => { e.stopPropagation(); goToPage(currentPage - 1); }}
+                disabled={currentPage === 0}
+                style={{
+                  width: '44px',
+                  height: '44px',
+                  borderRadius: '50%',
+                  border: `1px solid ${theme.cardBorder}`,
+                  background: theme.cardBg,
+                  color: currentPage === 0 ? theme.textMuted : theme.text,
+                  fontSize: '18px',
+                  cursor: currentPage === 0 ? 'not-allowed' : 'pointer'
+                }}
+              >
+                ↑
+              </button>
+              
+              <button
+                onClick={(e) => { e.stopPropagation(); toggleReading(); }}
+                style={{
+                  width: '64px',
+                  height: '64px',
+                  borderRadius: '50%',
+                  border: 'none',
+                  background: `linear-gradient(135deg, ${theme.accentLight}, ${theme.accent})`,
+                  color: theme.bg,
+                  fontSize: '24px',
+                  cursor: 'pointer',
+                  boxShadow: isReading 
+                    ? `0 0 30px ${theme.accentGlow}` 
+                    : '0 4px 20px rgba(0,0,0,0.3)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}
+              >
+                {isReading ? '⏸' : '▶'}
+              </button>
+
+              <button
+                onClick={(e) => { e.stopPropagation(); goToPage(currentPage + 1); }}
+                disabled={currentPage === pages.length - 1}
+                style={{
+                  width: '44px',
+                  height: '44px',
+                  borderRadius: '50%',
+                  border: `1px solid ${theme.cardBorder}`,
+                  background: theme.cardBg,
+                  color: currentPage === pages.length - 1 ? theme.textMuted : theme.text,
+                  fontSize: '18px',
+                  cursor: currentPage === pages.length - 1 ? 'not-allowed' : 'pointer'
+                }}
+              >
+                ↓
+              </button>
+            </div>
+
+            <div style={{
+              textAlign: 'center',
+              fontSize: '13px',
+              color: theme.textMuted,
+              letterSpacing: '0.1em'
+            }}>
+              {currentPage + 1} / {pages.length}
+              {isSpeaking && (
+                <span style={{ marginLeft: '12px', color: theme.accent }}>
+                  <span style={{ animation: 'pulse 1s infinite' }}>●</span> {currentWordIndex + 1}/{tokens.length}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ============ MAIN APP ============
+    function App() {
+      const [currentBook, setCurrentBook] = useState(null);
+      const [savedBooks, setSavedBooks] = useState([]);
+      const [settings, setSettings] = useState({
+        ttsEngine: 'browser',
+        wpm: 150,
+        browserVoice: '',
+        elevenLabsKey: '',
+        elevenLabsVoice: ELEVENLABS_VOICES[0].id,
+        theme: 'dark'
+      });
+      const [showSettings, setShowSettings] = useState(false);
+      const [browserVoices, setBrowserVoices] = useState([]);
+
+      useEffect(() => {
+        // Load settings
+        const saved = localStorage.getItem('scrollread_settings');
+        if (saved) {
+          setSettings(JSON.parse(saved));
+        }
+
+        // Load saved books
+        const books = localStorage.getItem('scrollread_books');
+        if (books) {
+          setSavedBooks(JSON.parse(books));
+        }
+
+        // Load browser voices
+        const loadVoices = () => {
+          const voices = speechSynthesis.getVoices();
+          const italianFirst = [...voices].sort((a, b) => {
+            if (a.lang.startsWith('it') && !b.lang.startsWith('it')) return -1;
+            if (!a.lang.startsWith('it') && b.lang.startsWith('it')) return 1;
+            return 0;
+          });
+          setBrowserVoices(italianFirst);
+        };
+        loadVoices();
+        speechSynthesis.onvoiceschanged = loadVoices;
+      }, []);
+
+      useEffect(() => {
+        localStorage.setItem('scrollread_settings', JSON.stringify(settings));
+      }, [settings]);
+
+      const handleBookSelect = (book) => {
+        setCurrentBook(book);
+        
+        // Save to library
+        const existing = savedBooks.find(b => b.title === book.title);
+        if (!existing) {
+          const newBooks = [book, ...savedBooks].slice(0, 10);
+          setSavedBooks(newBooks);
+          localStorage.setItem('scrollread_books', JSON.stringify(newBooks));
+        }
+      };
+
+      if (currentBook) {
+        return (
+          <>
+            <ReaderScreen 
+              book={currentBook}
+              onBack={() => setCurrentBook(null)}
+              settings={settings}
+              onOpenSettings={() => setShowSettings(true)}
+            />
+            <SettingsModal
+              isOpen={showSettings}
+              onClose={() => setShowSettings(false)}
+              settings={settings}
+              onSettingsChange={setSettings}
+              voices={browserVoices}
+            />
+          </>
+        );
+      }
+
+      return (
+        <>
+          <LibraryScreen 
+            onBookSelect={handleBookSelect}
+            savedBooks={savedBooks}
+            settings={settings}
+            onOpenSettings={() => setShowSettings(true)}
+          />
+          <SettingsModal
+            isOpen={showSettings}
+            onClose={() => setShowSettings(false)}
+            settings={settings}
+            onSettingsChange={setSettings}
+            voices={browserVoices}
+          />
+        </>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
