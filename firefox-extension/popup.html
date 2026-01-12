@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>ScrollRead Gist Saver</title>
+  <style>
+    body {
+      width: 350px;
+      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 14px;
+      margin: 0;
+      background: #1a1a1a;
+      color: #e0e0e0;
+    }
+
+    h2 {
+      margin: 0 0 16px 0;
+      font-size: 18px;
+      color: #4fc3f7;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 6px;
+      font-weight: 500;
+      color: #b0b0b0;
+    }
+
+    input {
+      width: 100%;
+      padding: 8px;
+      margin-bottom: 12px;
+      border: 1px solid #333;
+      border-radius: 4px;
+      background: #2a2a2a;
+      color: #e0e0e0;
+      font-size: 13px;
+      box-sizing: border-box;
+    }
+
+    input:focus {
+      outline: none;
+      border-color: #4fc3f7;
+    }
+
+    button {
+      width: 100%;
+      padding: 10px;
+      margin-bottom: 8px;
+      border: none;
+      border-radius: 4px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .primary-btn {
+      background: #4fc3f7;
+      color: #000;
+    }
+
+    .primary-btn:hover {
+      background: #29b6f6;
+    }
+
+    .secondary-btn {
+      background: #333;
+      color: #e0e0e0;
+    }
+
+    .secondary-btn:hover {
+      background: #444;
+    }
+
+    .status {
+      padding: 8px;
+      margin-top: 12px;
+      border-radius: 4px;
+      font-size: 13px;
+      text-align: center;
+      display: none;
+    }
+
+    .status.success {
+      background: #2e7d32;
+      color: #fff;
+    }
+
+    .status.error {
+      background: #c62828;
+      color: #fff;
+    }
+
+    .info {
+      padding: 12px;
+      margin-top: 12px;
+      background: #2a2a2a;
+      border-left: 3px solid #4fc3f7;
+      border-radius: 4px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: #b0b0b0;
+    }
+
+    .info a {
+      color: #4fc3f7;
+      text-decoration: none;
+    }
+
+    .info a:hover {
+      text-decoration: underline;
+    }
+
+    .divider {
+      height: 1px;
+      background: #333;
+      margin: 16px 0;
+    }
+  </style>
+</head>
+<body>
+  <h2>🔖 ScrollRead Gist Saver</h2>
+
+  <div id="config-section">
+    <label for="gist-id">Gist ID</label>
+    <input type="text" id="gist-id" placeholder="abc123def456...">
+
+    <label for="github-pat">GitHub Personal Access Token</label>
+    <input type="password" id="github-pat" placeholder="ghp_...">
+
+    <button class="primary-btn" id="save-settings">Salva configurazione</button>
+  </div>
+
+  <div class="divider"></div>
+
+  <button class="secondary-btn" id="save-page">💾 Salva questa pagina</button>
+
+  <div id="status" class="status"></div>
+
+  <div class="info">
+    <strong>Setup:</strong><br>
+    1. Crea una Gist su <a href="https://gist.github.com" target="_blank">gist.github.com</a><br>
+    2. Aggiungi un file <code>articles.json</code> con contenuto <code>[]</code><br>
+    3. Genera un token su <a href="https://github.com/settings/tokens" target="_blank">github.com/settings/tokens</a> (scope: gist)<br>
+    4. Incolla Gist ID e token qui sopra<br>
+    <br>
+    <strong>Usa la stessa Gist configurata nell'app ScrollRead!</strong>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
