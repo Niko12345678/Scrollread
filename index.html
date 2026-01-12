@@ -2495,7 +2495,7 @@
           setIsReading(false);
           isReadingRef.current = false;
         }
-      }, [settings.autoAdvance]);
+      }, [settings.autoAdvance, speakText]);
 
       const speakText = useCallback((text, pageTokens) => {
         stopSpeaking();
@@ -2657,7 +2657,8 @@
           // Restart with new rate
           speakWithBrowserTTS(currentTextRef.current, currentPageTokensRef.current);
         }
-      }, [isSpeedBoosted, isSpeaking, speakWithBrowserTTS]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [isSpeedBoosted, isSpeaking]);
 
       const handleTouchStart = (e) => {
         setTouchStart(e.touches[0].clientY);
