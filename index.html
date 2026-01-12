@@ -229,7 +229,7 @@
     // ============================================================
     // VERSION & CONSTANTS
     // ============================================================
-    const APP_VERSION = '1.6.5';
+    const APP_VERSION = '1.6.6';
     const BUILD_DATE = '2026-01-12';
 
     // ============================================================
@@ -2414,20 +2414,24 @@
             // Extract remaining tokens from current word onwards
             const remainingTokens = currentPageTokensRef.current.slice(currentWordIdx);
             // Reconstruct text from remaining tokens
-            const remainingText = remainingTokens.map(t => t.word).join('');
+            const remainingText = remainingTokens.map(t => t.word).join(' ');
             // Create new tokens with adjusted positions for the partial text
+            let position = 0;
             const adjustedTokens = remainingTokens.map((token, idx) => {
-              const startOffset = remainingTokens[0].start;
+              const start = position;
+              const end = position + token.word.length;
+              position = end + 1; // +1 for the space after the word
               return {
                 word: token.word,
-                start: token.start - startOffset,
-                end: token.end - startOffset
+                start: start,
+                end: end
               };
             });
 
             // Resume speaking from current position
             speakWithBrowserTTS(remainingText, adjustedTokens);
-            // Adjust current word index to account for the sliced tokens
+            // Update tokens state and reset word index for karaoke rendering
+            setTokens(adjustedTokens);
             setCurrentWordIndex(0);
             currentWordIndexRef.current = 0;
           } else {
