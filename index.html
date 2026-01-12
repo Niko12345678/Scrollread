@@ -229,7 +229,7 @@
     // ============================================================
     // VERSION & CONSTANTS
     // ============================================================
-    const APP_VERSION = '1.6.3';
+    const APP_VERSION = '1.6.4';
     const BUILD_DATE = '2026-01-12';
 
     // ============================================================
@@ -2406,7 +2406,7 @@
           speakWithBrowserTTS(currentTextRef.current, currentPageTokensRef.current);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, [isSpeedBoosted, isSpeaking]);
+      }, [isSpeedBoosted]);
 
       const handleTouchStart = (e) => {
         setTouchStart(e.touches[0].clientY);
