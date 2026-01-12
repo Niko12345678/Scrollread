@@ -331,7 +331,7 @@
       const tokens = [];
       const regex = /(\S+)/g;
       let match;
-      
+
       while ((match = regex.exec(text)) !== null) {
         tokens.push({
           word: match[1],
@@ -339,8 +339,86 @@
           end: match.index + match[1].length
         });
       }
-      
+
       return tokens;
+    }
+
+    // ============ LANGUAGE DETECTION ============
+    function detectLanguage(text) {
+      // Take first 500 words for analysis
+      const words = text.toLowerCase()
+        .replace(/[^\w\s]/g, ' ')
+        .split(/\s+/)
+        .filter(w => w.length > 2)
+        .slice(0, 500);
+
+      if (words.length === 0) return 'it'; // Default to Italian
+
+      // Language-specific common words
+      const languagePatterns = {
+        it: ['che', 'della', 'per', 'con', 'sono', 'una', 'degli', 'nella', 'alla', 'questo', 'anche', 'essere', 'come', 'più', 'suo', 'stato', 'quando', 'molto', 'però', 'ancora'],
+        en: ['the', 'and', 'for', 'with', 'are', 'have', 'this', 'that', 'from', 'they', 'been', 'have', 'their', 'which', 'about', 'would', 'there', 'could', 'these', 'when'],
+        fr: ['les', 'des', 'pour', 'dans', 'que', 'qui', 'une', 'avec', 'est', 'sont', 'par', 'sur', 'pas', 'plus', 'peut', 'tout', 'comme', 'mais', 'été', 'cette'],
+        de: ['der', 'die', 'das', 'und', 'den', 'dem', 'des', 'ein', 'eine', 'ist', 'nicht', 'auch', 'sich', 'von', 'mit', 'wird', 'oder', 'sie', 'aber', 'aus'],
+        es: ['los', 'las', 'del', 'que', 'para', 'con', 'una', 'por', 'como', 'más', 'pero', 'sus', 'les', 'ese', 'esta', 'son', 'todo', 'también', 'fue', 'era']
+      };
+
+      // Count matches for each language
+      const scores = {};
+      for (const [lang, patterns] of Object.entries(languagePatterns)) {
+        scores[lang] = 0;
+        for (const word of words) {
+          if (patterns.includes(word)) {
+            scores[lang]++;
+          }
+        }
+      }
+
+      // Find language with highest score
+      let maxScore = 0;
+      let detectedLang = 'it';
+      for (const [lang, score] of Object.entries(scores)) {
+        if (score > maxScore) {
+          maxScore = score;
+          detectedLang = lang;
+        }
+      }
+
+      // If no clear match, default to Italian
+      if (maxScore < 3) {
+        detectedLang = 'it';
+      }
+
+      console.log('Language detection scores:', scores, '→ Detected:', detectedLang);
+      return detectedLang;
+    }
+
+    // Auto-select best voice for detected language
+    function selectVoiceForLanguage(detectedLang, availableVoices) {
+      if (!availableVoices || availableVoices.length === 0) return null;
+
+      // Map language codes to voice preferences
+      const langMap = {
+        'it': ['it-IT', 'it'],
+        'en': ['en-GB', 'en-US', 'en'],
+        'fr': ['fr-FR', 'fr'],
+        'de': ['de-DE', 'de'],
+        'es': ['es-ES', 'es']
+      };
+
+      const preferredLangs = langMap[detectedLang] || ['it-IT', 'it'];
+
+      // Try to find a voice matching the preferred languages
+      for (const prefLang of preferredLangs) {
+        const voice = availableVoices.find(v => v.lang.startsWith(prefLang));
+        if (voice) {
+          console.log('Auto-selected voice:', voice.name, '(', voice.lang, ')');
+          return voice.name;
+        }
+      }
+
+      // Fallback: return first available voice
+      return availableVoices[0]?.name || null;
     }
 
     // ============ ELEVENLABS TTS ============
@@ -1526,7 +1604,7 @@
               }}>
                 Velocità: {settings.wpm || 150} parole/minuto
               </label>
-              
+
               {/* WPM Preset buttons */}
               <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
                 {[100, 150, 200, 250].map(wpmValue => (
@@ -1537,8 +1615,8 @@
                       flex: 1,
                       padding: '10px 8px',
                       borderRadius: '8px',
-                      border: (settings.wpm || 150) === wpmValue 
-                        ? `2px solid ${theme.accent}` 
+                      border: (settings.wpm || 150) === wpmValue
+                        ? `2px solid ${theme.accent}`
                         : `1px solid ${theme.inputBorder}`,
                       background: (settings.wpm || 150) === wpmValue
                         ? theme.cardBg
@@ -1552,7 +1630,7 @@
                   </button>
                 ))}
               </div>
-              
+
               {/* Fine tune slider */}
               <input
                 type="range"
@@ -1570,6 +1648,68 @@
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: theme.textMuted, marginTop: '4px' }}>
                 <span>🐢 Lento</span>
                 <span>Veloce 🐇</span>
+              </div>
+            </div>
+
+            {/* Auto-advance toggle */}
+            <div style={{ marginBottom: '24px' }}>
+              <label style={{
+                fontSize: '12px',
+                fontWeight: 600,
+                color: theme.textMuted,
+                letterSpacing: '0.05em',
+                textTransform: 'uppercase',
+                display: 'block',
+                marginBottom: '12px'
+              }}>
+                Avanzamento automatico
+              </label>
+
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  onClick={() => onSettingsChange({ ...settings, autoAdvance: true })}
+                  style={{
+                    flex: 1,
+                    padding: '12px',
+                    borderRadius: '8px',
+                    border: (settings.autoAdvance !== false)
+                      ? `2px solid ${theme.accent}`
+                      : `1px solid ${theme.inputBorder}`,
+                    background: (settings.autoAdvance !== false)
+                      ? theme.cardBg
+                      : theme.inputBg,
+                    color: theme.text,
+                    fontSize: '13px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Attivo
+                  <div style={{ fontSize: '10px', color: theme.textMuted, marginTop: '4px' }}>
+                    Passa alla pagina successiva
+                  </div>
+                </button>
+                <button
+                  onClick={() => onSettingsChange({ ...settings, autoAdvance: false })}
+                  style={{
+                    flex: 1,
+                    padding: '12px',
+                    borderRadius: '8px',
+                    border: (settings.autoAdvance === false)
+                      ? `2px solid ${theme.accent}`
+                      : `1px solid ${theme.inputBorder}`,
+                    background: (settings.autoAdvance === false)
+                      ? theme.cardBg
+                      : theme.inputBg,
+                    color: theme.text,
+                    fontSize: '13px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Disattivo
+                  <div style={{ fontSize: '10px', color: theme.textMuted, marginTop: '4px' }}>
+                    Resta sulla pagina
+                  </div>
+                </button>
               </div>
             </div>
 
@@ -1786,12 +1926,14 @@
         const current = currentPageRef.current;
         const allPages = pagesRef.current;
         const reading = isReadingRef.current;
-        
-        if (reading && current < allPages.length - 1) {
+        const autoAdvance = settings.autoAdvance !== false; // Default to true
+
+        // Only auto-advance if the setting is enabled
+        if (autoAdvance && reading && current < allPages.length - 1) {
           const nextPage = current + 1;
           setCurrentPage(nextPage);
           currentPageRef.current = nextPage;
-          
+
           // Small delay then speak next page
           setTimeout(() => {
             const newTokens = tokenizeWithPositions(allPages[nextPage]);
@@ -1800,10 +1942,11 @@
             speakText(allPages[nextPage], newTokens);
           }, 400);
         } else {
+          // Stop reading if we can't advance
           setIsReading(false);
           isReadingRef.current = false;
         }
-      }, []);
+      }, [settings.autoAdvance]);
 
       const speakText = useCallback((text, pageTokens) => {
         stopSpeaking();
@@ -2264,7 +2407,8 @@
         elevenLabsVoice: ELEVENLABS_VOICES[0].id,
         theme: 'dark',
         githubPat: '',
-        githubGistId: ''
+        githubGistId: '',
+        autoAdvance: true
       });
       const [showSettings, setShowSettings] = useState(false);
       const [browserVoices, setBrowserVoices] = useState([]);
@@ -2301,8 +2445,20 @@
       }, [settings]);
 
       const handleBookSelect = (book) => {
+        // Detect language and auto-select voice
+        const detectedLang = detectLanguage(book.fullText);
+
+        // Auto-select browser voice based on detected language
+        const selectedVoice = selectVoiceForLanguage(detectedLang, browserVoices);
+        if (selectedVoice && selectedVoice !== settings.browserVoice) {
+          const newSettings = { ...settings, browserVoice: selectedVoice };
+          setSettings(newSettings);
+          localStorage.setItem('scrollread_settings', JSON.stringify(newSettings));
+          console.log('Auto-selected voice for', detectedLang, ':', selectedVoice);
+        }
+
         setCurrentBook(book);
-        
+
         // Save to library
         const existing = savedBooks.find(b => b.title === book.title);
         if (!existing) {
