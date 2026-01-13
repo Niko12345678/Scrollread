@@ -1,4 +1,5 @@
-import { openDB, DBSchema, IDBPDatabase } from 'idb';
+import { openDB } from 'idb';
+import type { DBSchema, IDBPDatabase } from 'idb';
 import type { Book, Article, ReadingProgress, Settings } from '../../types';
 
 // ============================================================
@@ -49,7 +50,7 @@ export async function initDB(): Promise<IDBPDatabase<ScrollReadDB>> {
   if (dbInstance) return dbInstance;
 
   dbInstance = await openDB<ScrollReadDB>(DB_NAME, DB_VERSION, {
-    upgrade(db, oldVersion, newVersion, transaction) {
+    upgrade(db, oldVersion, newVersion) {
       console.log(`Upgrading DB from ${oldVersion} to ${newVersion}`);
 
       // Create books store

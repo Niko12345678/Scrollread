@@ -22,7 +22,6 @@ class ElevenLabsTtsEngine implements TtsController {
   private isPausedState = false;
   private pausedAt = 0;
   private startedAt = 0;
-  private duration = 0;
 
   constructor(apiKey: string) {
     this.apiKey = apiKey;
@@ -102,7 +101,7 @@ class ElevenLabsTtsEngine implements TtsController {
       source.connect(this.audioContext.destination);
 
       this.audioSource = source;
-      this.duration = audioBuffer.duration;
+      
       this.startedAt = this.audioContext.currentTime;
       this.isPlayingState = true;
 
