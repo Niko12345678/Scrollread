@@ -38,7 +38,7 @@ interface ScrollReadDB extends DBSchema {
 }
 
 const DB_NAME = 'scrollread';
-const DB_VERSION = 1;
+const DB_VERSION = 2; // Incremented to fix settings keyPath issue
 
 let dbInstance: IDBPDatabase<ScrollReadDB> | null = null;
 
@@ -194,12 +194,17 @@ export async function getAllProgress(): Promise<ReadingProgress[]> {
 
 export async function saveSettings(settings: Settings): Promise<void> {
   const db = await initDB();
-  await db.put('settings', settings);
+  await db.put('settings', { ...settings, key: 'user-settings' } as any);
 }
 
 export async function getSettings(): Promise<Settings | undefined> {
   const db = await initDB();
-  return db.get('settings', 'user-settings');
+  const result = await db.get('settings', 'user-settings');
+  if (!result) return undefined;
+
+  // Remove the 'key' field before returning
+  const { key, ...settings } = result as any;
+  return settings as Settings;
 }
 
 export async function getSettingsOrDefault(): Promise<Settings> {
