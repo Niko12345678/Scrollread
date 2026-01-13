@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { parseEpub } from '../../modules/epub';
 import { saveBook } from '../../modules/storage';
 import { createTextChunks } from '../../modules/epub';
+import { isSupabaseConfigured, getSupabase } from '../../modules/supabase';
 import type { Book } from '../../types';
 
 interface EpubUploadProps {
@@ -60,15 +61,52 @@ export function EpubUpload({ onBookAdded }: EpubUploadProps) {
     setIsLoadingUrl(true);
 
     try {
-      // Fetch the ePub from URL
-      const response = await fetch(epubUrl);
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      let blob: Blob;
+
+      // Try using Supabase Edge Function to bypass CORS
+      if (isSupabaseConfigured()) {
+        try {
+          console.log('Fetching ePub via Supabase Edge Function...');
+          const supabase = getSupabase();
+
+          const { data, error } = await supabase.functions.invoke('fetch-epub', {
+            body: { url: epubUrl },
+          });
+
+          if (error) throw error;
+
+          if (!data || !data.success) {
+            throw new Error(data?.error || 'Failed to fetch ePub');
+          }
+
+          // Convert base64 back to blob
+          const binaryString = atob(data.data);
+          const bytes = new Uint8Array(binaryString.length);
+          for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+          }
+          blob = new Blob([bytes], { type: 'application/epub+zip' });
+          console.log('ePub fetched successfully via Edge Function');
+        } catch (edgeFnError) {
+          console.warn('Edge Function failed, trying direct fetch...', edgeFnError);
+          // Fallback to direct fetch if Edge Function fails
+          const response = await fetch(epubUrl);
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          }
+          blob = await response.blob();
+        }
+      } else {
+        // Direct fetch (may fail due to CORS)
+        console.log('Fetching ePub directly (no Supabase configured)...');
+        const response = await fetch(epubUrl);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        blob = await response.blob();
       }
 
-      const blob = await response.blob();
       const file = new File([blob], 'book.epub', { type: 'application/epub+zip' });
-
       const parsed = await parseEpub(file);
 
       const book: Book = {
@@ -90,6 +128,8 @@ export function EpubUpload({ onBookAdded }: EpubUploadProps) {
       if (error instanceof Error) {
         if (error.message === 'DRM_PROTECTED') {
           alert('⚠️ Questo ePub è protetto da DRM e non può essere letto.');
+        } else if (error.message.includes('NetworkError') || error.message.includes('CORS')) {
+          alert(`❌ Errore CORS: Il server non permette il download.\n\nSoluzione: Configura Supabase (vedi SUPABASE_SETUP.md) e deploya la Edge Function "fetch-epub" per risolvere questo problema.`);
         } else {
           alert(`❌ Errore nel caricamento da URL: ${error.message}`);
         }

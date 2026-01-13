@@ -35,7 +35,17 @@ Questo crea:
 - Indexes per performance
 - Row Level Security policies
 
-## 4. Deploy Edge Function (Estrazione Articoli)
+## 4. Deploy Edge Functions
+
+Supabase Edge Functions sono necessarie per:
+- **extract-article**: Estrarre contenuto pulito da URL web (per Read It Later)
+- **fetch-epub**: Scaricare file ePub da URL bypassando errori CORS
+
+### Perché serve fetch-epub?
+
+Quando provi a scaricare un file ePub da un URL esterno (es. `https://example.com/book.epub`) direttamente dal browser, spesso ottieni errori **CORS** (Cross-Origin Resource Sharing). Questo perché il browser blocca le richieste verso altri domini per sicurezza.
+
+La Edge Function `fetch-epub` risolve il problema scaricando il file **lato server** (dove non ci sono restrizioni CORS) e restituendolo all'app. Senza questa function, potrai caricare solo ePub dal tuo computer, non da URL.
 
 ### Installa Supabase CLI
 
@@ -66,12 +76,16 @@ supabase link --project-ref TUO_PROJECT_REF
 ```
 *Trovi PROJECT_REF nel dashboard sotto Settings → General*
 
-3. Deploy function:
+3. Deploy functions:
 ```bash
+# Deploy article extraction function (per Read It Later)
 supabase functions deploy extract-article
+
+# Deploy ePub fetch function (per importare ePub da URL senza errori CORS)
+supabase functions deploy fetch-epub
 ```
 
-4. ✅ Output: `Deployed Function extract-article version [hash]`
+4. ✅ Output: `Deployed Function extract-article version [hash]` e `Deployed Function fetch-epub version [hash]`
 
 ## 5. Ottieni Credenziali API
 
