@@ -19,9 +19,12 @@ export function Reader({ book, settings, onBack, onOpenSettings }: ReaderProps) 
   const [tokens, setTokens] = useState<WordPosition[]>([]);
   const [showUI, setShowUI] = useState(true);
   const [touchStart, setTouchStart] = useState<number | null>(null);
+  const [isSpeedBoosted, setIsSpeedBoosted] = useState(false);
+  const [shouldAutoplay, setShouldAutoplay] = useState(false);
 
   const currentPageRef = useRef(currentPage);
   const isSpeakingRef = useRef(isSpeaking);
+  const holdTimeoutRef = useRef<number | null>(null);
 
   // Create chunks if not already present
   const chunks = book.chunks || createTextChunks(book.fullText);
@@ -84,11 +87,24 @@ export function Reader({ book, settings, onBack, onOpenSettings }: ReaderProps) 
     }
   };
 
+  const stopSpeaking = useCallback(() => {
+    const tts = getTtsEngine(settings);
+    tts.stop();
+    setIsSpeaking(false);
+    setCurrentWordIndex(-1);
+  }, [settings]);
+
   const goToPage = useCallback((page: number) => {
     const newPage = Math.max(0, Math.min(totalPages - 1, page));
-    setCurrentPage(newPage);
+
+    // Save speaking state for autoplay
+    if (isSpeakingRef.current) {
+      setShouldAutoplay(true);
+    }
+
     stopSpeaking();
-  }, [totalPages]);
+    setCurrentPage(newPage);
+  }, [totalPages, stopSpeaking]);
 
   const speak = useCallback(async () => {
     try {
@@ -98,10 +114,13 @@ export function Reader({ book, settings, onBack, onOpenSettings }: ReaderProps) 
 
       setIsSpeaking(true);
 
+      // Apply speed boost if active
+      const effectiveWpm = settings.wpm * (isSpeedBoosted ? 2 : 1);
+
       await tts.speak(text, {
         engine: settings.ttsEngine,
         voice,
-        wpm: settings.wpm,
+        wpm: effectiveWpm,
         onWordBoundary: (wordIndex) => {
           setCurrentWordIndex(wordIndex);
         },
@@ -125,14 +144,7 @@ export function Reader({ book, settings, onBack, onOpenSettings }: ReaderProps) 
       console.error('Failed to speak:', error);
       setIsSpeaking(false);
     }
-  }, [chunks, settings, totalPages, goToPage]);
-
-  const stopSpeaking = useCallback(() => {
-    const tts = getTtsEngine(settings);
-    tts.stop();
-    setIsSpeaking(false);
-    setCurrentWordIndex(-1);
-  }, [settings]);
+  }, [chunks, settings, totalPages, goToPage, isSpeedBoosted]);
 
   const toggleSpeaking = useCallback(() => {
     if (isSpeakingRef.current) {
@@ -142,13 +154,61 @@ export function Reader({ book, settings, onBack, onOpenSettings }: ReaderProps) 
     }
   }, [speak, stopSpeaking]);
 
-  // Touch/swipe handlers
+  // Handle autoplay after page change
+  useEffect(() => {
+    if (shouldAutoplay) {
+      setShouldAutoplay(false);
+      const timer = setTimeout(() => {
+        speak();
+      }, 300);
+      return () => clearTimeout(timer);
+    }
+  }, [shouldAutoplay, speak]);
+
+  // Speed boost control
+  const enableSpeedBoost = useCallback(() => {
+    if (!isSpeedBoosted && isSpeakingRef.current) {
+      setIsSpeedBoosted(true);
+      // Restart speaking with new speed
+      stopSpeaking();
+      setTimeout(() => speak(), 100);
+    }
+  }, [isSpeedBoosted, stopSpeaking, speak]);
+
+  const disableSpeedBoost = useCallback(() => {
+    if (isSpeedBoosted && isSpeakingRef.current) {
+      setIsSpeedBoosted(false);
+      // Restart speaking with normal speed
+      stopSpeaking();
+      setTimeout(() => speak(), 100);
+    }
+  }, [isSpeedBoosted, stopSpeaking, speak]);
+
+  // Touch/swipe handlers with long-press for speed boost
   const handleTouchStart = (e: React.TouchEvent) => {
     setTouchStart(e.touches[0].clientY);
     setShowUI(true);
+
+    // Start long press timer for speed boost (activate after 200ms)
+    if (isSpeakingRef.current) {
+      holdTimeoutRef.current = window.setTimeout(() => {
+        enableSpeedBoost();
+      }, 200);
+    }
   };
 
   const handleTouchEnd = (e: React.TouchEvent) => {
+    // Cancel long press timer
+    if (holdTimeoutRef.current) {
+      clearTimeout(holdTimeoutRef.current);
+      holdTimeoutRef.current = null;
+    }
+
+    // Disable speed boost if active
+    if (isSpeedBoosted) {
+      disableSpeedBoost();
+    }
+
     if (!touchStart) return;
 
     const touchEnd = e.changedTouches[0].clientY;
@@ -160,6 +220,41 @@ export function Reader({ book, settings, onBack, onOpenSettings }: ReaderProps) 
     }
 
     setTouchStart(null);
+  };
+
+  const handleTouchCancel = () => {
+    // Cancel long press timer
+    if (holdTimeoutRef.current) {
+      clearTimeout(holdTimeoutRef.current);
+      holdTimeoutRef.current = null;
+    }
+
+    // Disable speed boost if active
+    if (isSpeedBoosted) {
+      disableSpeedBoost();
+    }
+
+    setTouchStart(null);
+  };
+
+  // Mouse handlers for desktop long-press
+  const handleMouseDown = () => {
+    if (isSpeakingRef.current) {
+      holdTimeoutRef.current = window.setTimeout(() => {
+        enableSpeedBoost();
+      }, 200);
+    }
+  };
+
+  const handleMouseUp = () => {
+    if (holdTimeoutRef.current) {
+      clearTimeout(holdTimeoutRef.current);
+      holdTimeoutRef.current = null;
+    }
+
+    if (isSpeedBoosted) {
+      disableSpeedBoost();
+    }
   };
 
   // Keyboard navigation
@@ -190,6 +285,15 @@ export function Reader({ book, settings, onBack, onOpenSettings }: ReaderProps) 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [currentPage, goToPage, toggleSpeaking, stopSpeaking, onBack]);
+
+  // Cleanup hold timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (holdTimeoutRef.current) {
+        clearTimeout(holdTimeoutRef.current);
+      }
+    };
+  }, []);
 
   // Render text with highlighting
   const renderText = () => {
@@ -252,6 +356,10 @@ export function Reader({ book, settings, onBack, onOpenSettings }: ReaderProps) 
       }}
       onTouchStart={handleTouchStart}
       onTouchEnd={handleTouchEnd}
+      onTouchCancel={handleTouchCancel}
+      onMouseDown={handleMouseDown}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseUp}
       onClick={() => setShowUI(!showUI)}
     >
       {/* Top UI Bar */}
