@@ -145,26 +145,99 @@ export interface ParsedEpub {
 }
 
 // ============================================================
-// SUPABASE TYPES
+// SUPABASE TYPES (snake_case for database columns)
 // ============================================================
+
+export interface ArticleRow {
+  id: string;
+  url: string;
+  title: string;
+  content: string;
+  excerpt?: string | null;
+  author?: string | null;
+  site_name?: string | null;
+  image_url?: string | null;
+  saved_at: number;
+  last_read_at?: number | null;
+  progress?: number | null;
+  is_archived?: boolean | null;
+  tags?: string[] | null;
+  created_at?: string;
+  updated_at?: string;
+}
 
 export interface Database {
   public: {
     Tables: {
       articles: {
-        Row: Article;
-        Insert: Omit<Article, 'id' | 'savedAt'>;
-        Update: Partial<Omit<Article, 'id'>>;
+        Row: ArticleRow;
+        Insert: Omit<ArticleRow, 'id' | 'created_at' | 'updated_at'>;
+        Update: Partial<Omit<ArticleRow, 'id' | 'created_at' | 'updated_at'>>;
       };
       reading_progress: {
-        Row: ReadingProgress;
-        Insert: Omit<ReadingProgress, 'lastReadAt'>;
-        Update: Partial<Omit<ReadingProgress, 'id'>>;
+        Row: {
+          id: string;
+          type: 'book' | 'article';
+          current_page: number;
+          total_pages?: number | null;
+          last_read_at: number;
+          completed_at?: number | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Insert: {
+          id: string;
+          type: 'book' | 'article';
+          current_page: number;
+          total_pages?: number | null;
+          last_read_at: number;
+          completed_at?: number | null;
+        };
+        Update: Partial<Omit<{
+          id: string;
+          type: 'book' | 'article';
+          current_page: number;
+          total_pages?: number | null;
+          last_read_at: number;
+          completed_at?: number | null;
+        }, 'id'>>;
       };
       settings: {
-        Row: Settings & { userId: string };
-        Insert: Settings & { userId: string };
-        Update: Partial<Settings>;
+        Row: {
+          user_id: string;
+          theme: string;
+          tts_engine: string;
+          browser_voice?: string | null;
+          elevenlabs_voice?: string | null;
+          elevenlabs_key?: string | null;
+          wpm: number;
+          auto_advance?: boolean | null;
+          highlight_enabled?: boolean | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Insert: {
+          user_id: string;
+          theme: string;
+          tts_engine: string;
+          browser_voice?: string | null;
+          elevenlabs_voice?: string | null;
+          elevenlabs_key?: string | null;
+          wpm: number;
+          auto_advance?: boolean | null;
+          highlight_enabled?: boolean | null;
+        };
+        Update: Partial<Omit<{
+          user_id: string;
+          theme: string;
+          tts_engine: string;
+          browser_voice?: string | null;
+          elevenlabs_voice?: string | null;
+          elevenlabs_key?: string | null;
+          wpm: number;
+          auto_advance?: boolean | null;
+          highlight_enabled?: boolean | null;
+        }, 'user_id'>>;
       };
     };
   };

@@ -6,9 +6,10 @@ import type { Book } from '../../types';
 interface LibraryProps {
   onBookSelect: (book: Book) => void;
   onOpenSettings: () => void;
+  onShowReadLater?: () => void;
 }
 
-export function Library({ onBookSelect, onOpenSettings }: LibraryProps) {
+export function Library({ onBookSelect, onOpenSettings, onShowReadLater }: LibraryProps) {
   const [books, setBooks] = useState<Book[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -74,20 +75,40 @@ export function Library({ onBookSelect, onOpenSettings }: LibraryProps) {
           >
             📖 ScrollRead
           </h1>
-          <button
-            onClick={onOpenSettings}
-            style={{
-              background: 'var(--card-bg)',
-              border: '1px solid var(--card-border)',
-              padding: '0.5rem 1rem',
-              borderRadius: '8px',
-              color: 'var(--text)',
-              cursor: 'pointer',
-              fontSize: '1.2rem',
-            }}
-          >
-            ⚙️
-          </button>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            {onShowReadLater && (
+              <button
+                onClick={onShowReadLater}
+                style={{
+                  background: 'var(--card-bg)',
+                  border: '1px solid var(--card-border)',
+                  padding: '0.5rem 1rem',
+                  borderRadius: '8px',
+                  color: 'var(--text)',
+                  cursor: 'pointer',
+                  fontSize: '1.2rem',
+                }}
+                title="Read It Later"
+              >
+                📌
+              </button>
+            )}
+            <button
+              onClick={onOpenSettings}
+              style={{
+                background: 'var(--card-bg)',
+                border: '1px solid var(--card-border)',
+                padding: '0.5rem 1rem',
+                borderRadius: '8px',
+                color: 'var(--text)',
+                cursor: 'pointer',
+                fontSize: '1.2rem',
+              }}
+              title="Impostazioni"
+            >
+              ⚙️
+            </button>
+          </div>
         </div>
 
         {/* Upload */}

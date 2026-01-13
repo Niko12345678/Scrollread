@@ -1,16 +1,21 @@
 import { useState, useEffect } from 'react';
 import { Library } from './components/Library/Library';
 import { Reader } from './components/Reader/Reader';
+import { ReadLater } from './components/ReadLater/ReadLater';
 import { Settings } from './components/Settings/Settings';
 import { useSettings } from './hooks/useSettings';
 import { migrateFromLocalStorage, initDB } from './modules/storage';
+import { createTextChunks } from './modules/epub';
 import { THEMES } from './utils/constants';
-import type { Book } from './types';
+import type { Book, Article } from './types';
+
+type ViewMode = 'library' | 'readLater';
 
 function App() {
   const { settings, updateSettings, isLoading } = useSettings();
   const [currentBook, setCurrentBook] = useState<Book | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [viewMode, setViewMode] = useState<ViewMode>('library');
 
   // Initialize DB and migrate localStorage data
   useEffect(() => {
@@ -34,6 +39,25 @@ function App() {
       root.style.setProperty(`--${cssKey}`, value);
     });
   }, [settings?.theme]);
+
+  // Convert article to book format for reading
+  const convertArticleToBook = (article: Article): Book => {
+    return {
+      id: article.id,
+      title: article.title,
+      author: article.author || article.siteName,
+      fullText: article.content,
+      chapters: [{ title: article.title, text: article.content }],
+      chunks: createTextChunks(article.content),
+      addedAt: article.savedAt,
+      lastReadAt: article.lastReadAt || article.savedAt,
+    };
+  };
+
+  const handleArticleSelect = (article: Article) => {
+    const book = convertArticleToBook(article);
+    setCurrentBook(book);
+  };
 
   if (isLoading || !settings) {
     return (
@@ -64,10 +88,16 @@ function App() {
           onBack={() => setCurrentBook(null)}
           onOpenSettings={() => setShowSettings(true)}
         />
-      ) : (
+      ) : viewMode === 'library' ? (
         <Library
           onBookSelect={setCurrentBook}
           onOpenSettings={() => setShowSettings(true)}
+          onShowReadLater={() => setViewMode('readLater')}
+        />
+      ) : (
+        <ReadLater
+          onArticleSelect={handleArticleSelect}
+          onBack={() => setViewMode('library')}
         />
       )}
 
